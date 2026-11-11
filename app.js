@@ -261,7 +261,8 @@ function settings() {
     (googleClientId ? (drive.connected() && connectedAccount ? click('Sincronizar agora','sync','primary')+click('Desconectar','disconnect') :
       click('Conectar ao Google Drive','connect','primary')) : '<p class="hint">A sincronização depende do ID Google configurado nesta distribuição. Consulte o guia de instalação.</p>')+
     '</section><section class="setting-group"><h3>Importar dados</h3><p>Use uma planilha XLSX no modelo Contas CCS.</p>'+
-    click('Importar planilha','import')+'</section><section class="setting-group"><h3>Cópia de segurança</h3>'+
+    '<div class="import-actions"><a class="button-link" href="modelo-contas-ccs.xlsx" download>Baixar modelo Excel</a>'+
+    click('Importar planilha','import')+'</div></section><section class="setting-group"><h3>Cópia de segurança</h3>'+
     click('Exportar dados','backup')+' '+click('Restaurar cópia','restore')+'</section>');
   if (googleClientId) void drive.prepareGoogle().catch(error=>notice(error.message,true));
 }

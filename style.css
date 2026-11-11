@@ -2,8 +2,10 @@
 :root{font:16px/1.45 'Segoe UI',Roboto,Arial,sans-serif;color:#122c40;background:#f4f7fa;--navy:#112e47;--teal:#006f64;--line:#d7e0e7;--muted:#506778}
 body{margin:0}
 button,input,select{font:inherit}
-button{cursor:pointer;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--navy);padding:.48rem .75rem;font-weight:600}
-button:hover{background:#e9f5f2}
+button,.button-link{cursor:pointer;border:1px solid var(--line);border-radius:7px;background:#fff;color:var(--navy);padding:.48rem .75rem;font-weight:600}
+button:hover,.button-link:hover{background:#e9f5f2}
+.button-link{text-decoration:none}
+.import-actions{display:flex;flex-wrap:wrap;gap:.5rem}
 button:focus-visible,a:focus-visible,input:focus-visible,select:focus-visible{outline:3px solid #1d8f82;outline-offset:2px}
 button:disabled{cursor:wait;opacity:.62}
 .primary{background:var(--teal);color:white;border-color:var(--teal)}
