@@ -1,4 +1,4 @@
-const version='contas-ccs-2';
+const version='contas-ccs-3';
 const shell=['./','index.html','style.css','app.js','core.js','drive.js','import.js','fflate.js','config.js','manifest.webmanifest','icon.svg','icon-192.png','icon-512.png','privacidade.html'];
 self.addEventListener('install', event => event.waitUntil(caches.open(version).then(cache => cache.addAll(shell))));
 self.addEventListener('activate', event => event.waitUntil(caches.keys().then(keys => Promise.all(

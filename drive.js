@@ -2,8 +2,9 @@ const api = 'https://www.googleapis.com/drive/v3/';
 const upload = 'https://www.googleapis.com/upload/drive/v3/files?uploadType=multipart';
 const prefix = 'contas-ccs-v1-';
 const driveScope = 'https://www.googleapis.com/auth/drive.appdata';
-const scope = 'openid email '+driveScope;
-let token, expires = 0, loadIdentity;
+const driveScopeAlias = 'https://www.googleapis.com/auth/drive.appfolder';
+const scope = 'openid https://www.googleapis.com/auth/userinfo.email '+driveScope;
+let token, expires = 0, loadIdentity, requestConsent = false;
 
 export function prepareGoogle() {
   loadIdentity ??= new Promise((resolve,reject) => {
@@ -29,11 +30,19 @@ export async function authorize(clientId) {
       client_id:clientId, scope, callback:resolve,
       error_callback: error => reject(new Error('Login Google: '+error.type))
     });
-    client.requestAccessToken({prompt:'select_account'});
+    client.requestAccessToken({prompt:requestConsent ? 'select_account consent' : 'select_account'});
   });
-  if (!response.access_token || !google.accounts.oauth2.hasGrantedAllScopes(response,driveScope)) {
-    throw new Error('Autorize o acesso aos dados do aplicativo no Drive.');
+  if (response.error) {
+    requestConsent = response.error === 'access_denied';
+    throw new Error('O Google não concluiu a autorização ('+response.error+').');
   }
+  if (!response.access_token) throw new Error('O Google não retornou uma sessão de acesso.');
+  const grantedScopes = new Set((response.scope || '').split(/\s+/));
+  if (!grantedScopes.has(driveScope) && !grantedScopes.has(driveScopeAlias)) {
+    requestConsent = true;
+    throw new Error('A permissão para os dados do aplicativo no Drive não foi concedida. Clique em Conectar ao Google Drive novamente e marque essa permissão na tela do Google.');
+  }
+  requestConsent = false;
   token = response.access_token;
   expires = Date.now() + Number(response.expires_in)*1000 - 30000;
   try {
