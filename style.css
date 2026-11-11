@@ -40,6 +40,7 @@ nav button[aria-current=true]{background:var(--navy);color:#fff;border-color:var
 .table{border-collapse:collapse;width:100%;font-variant-numeric:tabular-nums}
 .table th,.table td{padding:.49rem .55rem;border-bottom:1px solid var(--line);text-align:left}
 .table th{background:#e8eef3;font-size:.82rem}
+.table .fixed-group th{background:#d9f0eb;color:#07594f}
 .table tr:last-child td{border-bottom:0}
 .table .amount{text-align:right;white-space:nowrap}
 .table .action-cell{text-align:right}

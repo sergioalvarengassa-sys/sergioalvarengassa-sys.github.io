@@ -46,6 +46,8 @@ export function project(heads, month) {
       (item.month === previous.month && !item.recurring)) fixedBySeries.set(item.series,item);
   }
   const fixed = [...fixedBySeries.values()].filter(item => !item.removed)
+    .map(item => item.group===undefined && item.series.startsWith('import-') && /\bd[eé]b\.?\s*$/i.test(item.name)
+      ? {...item,group:'Débitos'} : item)
     .sort((a,b) => a.day-b.day || a.name.localeCompare(b.name,'pt-BR'));
   const entries = byType('entry').filter(item => item.month === month)
     .sort((a,b) => (a.date || '').localeCompare(b.date || '') || a.name.localeCompare(b.name,'pt-BR'));
@@ -122,7 +124,8 @@ export function validateBatch(batch) {
     if (v.type==='card') return str(v.id,100) && str(v.name) && [5,20].includes(v.day) && typeof v.archived==='boolean';
     if (!str(v.name) || !amount(v.amount) || !validMonth(v.month)) return false;
     if (v.type==='fixed') return str(v.series,100) && [5,20].includes(v.day) &&
-      typeof v.recurring==='boolean' && typeof v.removed==='boolean';
+      typeof v.recurring==='boolean' && typeof v.removed==='boolean' &&
+      (v.group===undefined || typeof v.group==='string' && v.group.length<=100);
     return str(v.card,100) && Object.hasOwn(kinds,v.kind) &&
       (v.date === '' || (typeof v.date==='string' && /^\d{4}-\d{2}-\d{2}$/.test(v.date))) &&
       (v.kind!=='installment' || (Number.isInteger(v.part) && Number.isInteger(v.count) &&

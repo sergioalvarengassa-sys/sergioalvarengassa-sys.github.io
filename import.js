@@ -35,8 +35,7 @@ function rangeOfSum(formula,column,fallback) {
   return match ? match.slice(1).map(Number) : fallback;
 }
 
-export async function importWorkbook(file,year) {
-  if (!Number.isInteger(year) || year<1900 || year>9998) throw new Error('Informe o ano das abas.');
+export async function importWorkbook(file,year,existingCards=[]) {
   if (file.size>10_000_000) throw new Error('O arquivo XLSX ultrapassa 10 MB.');
   const bytes=new Uint8Array(await file.arrayBuffer());
   let expanded=0;
@@ -50,21 +49,39 @@ export async function importWorkbook(file,year) {
   const workbook=xml(zip,'xl/workbook.xml');
   const relations=xml(zip,'xl/_rels/workbook.xml.rels');
   const strings=zip['xl/sharedStrings.xml'] ? [...xml(zip,'xl/sharedStrings.xml').getElementsByTagNameNS('*','si')].map(item=>item.textContent) : [];
+  const sheets=[...workbook.getElementsByTagNameNS('*','sheet')];
+  const targets=new Map([...relations.getElementsByTagNameNS('*','Relationship')].map(rel=>[rel.getAttribute('Id'),rel.getAttribute('Target')]));
+  const readSheet=sheet=>{
+    const target=targets.get(sheet.getAttribute('r:id'));
+    if (!target) throw new Error('Não foi possível localizar a aba '+sheet.getAttribute('name')+'.');
+    return sheetCells(xml(zip,target.startsWith('/')?target.slice(1):'xl/'+target),strings);
+  };
+  const guide=sheets.find(sheet=>fold(sheet.getAttribute('name'))==='como preencher');
+  const guideCells=guide ? readSheet(guide) : new Map();
+  const modern=fold(guideCells.get('A17')?.value)==='ano da planilha';
+  const validYear=value=>Number.isInteger(value) && value>=1900 && value<=9998;
+  if (modern) {
+    const workbookYear=Number(guideCells.get('B17')?.value);
+    if (!validYear(workbookYear)) throw new Error('Preencha o ano na aba Como preencher, na célula B17, e salve a planilha.');
+    if (year!==undefined && year!==workbookYear) throw new Error('O ano informado é diferente do ano da planilha ('+workbookYear+').');
+    year=workbookYear;
+  }
+  if (!validYear(year)) throw new Error('Informe o ano das abas no campo Ano (para planilhas antigas).');
   const changes=new Map(), notes=[];
   const knownCards=new Map([
     ['nubank',{id:'nubank',name:'Nubank',day:20}],
     ['mercado pago',{id:'mercado-pago',name:'Mercado Pago',day:20}]
   ]);
+  for (const card of existingCards) {
+    const key=fold(card.name);
+    if (!knownCards.has(key) || knownCards.get(key).id===card.id) knownCards.set(key,card);
+  }
   const recognized=new Set();
-  for (const sheet of workbook.getElementsByTagNameNS('*','sheet')) {
+  for (const sheet of sheets) {
     const label=sheet.getAttribute('name');
     const index=months.indexOf(fold(label).slice(0,3));
     if (index<0 || recognized.has(index)) continue;
-    const relation=[...relations.getElementsByTagNameNS('*','Relationship')].find(rel=>rel.getAttribute('Id')===sheet.getAttribute('r:id'));
-    const target=relation?.getAttribute('Target');
-    if (!target) continue;
-    const path=target.startsWith('/') ? target.slice(1) : 'xl/'+target;
-    const cells=sheetCells(xml(zip,path),strings);
+    const cells=readSheet(sheet);
     const value=address=>cells.get(address)?.value;
     const formula=address=>cells.get(address)?.formula;
     const marker=(column,text)=>[...cells.keys()].find(address=>address.match(/^\D+/)?.[0]===column && fold(value(address))===text);
@@ -136,7 +153,9 @@ export async function importWorkbook(file,year) {
         const occurrence=(names.get(normalized) || 0)+1;
         names.set(normalized,occurrence);
         const series='import-'+await hash(new TextEncoder().encode(day+':'+normalized+':'+occurrence));
-        const item={type:'fixed',series,month,amount:cent(amount),name:description,day,recurring:false,removed:false};
+        const group=modern ? name(value((day===5?'C':'H')+row)).slice(0,100) : undefined;
+        const item={type:'fixed',series,month,amount:cent(amount),name:description,day,recurring:false,removed:false,
+          ...(group!==undefined ? {group} : {})};
         changes.set('fixed:'+series+':'+month,item);
         items.push(item);
       }
@@ -153,7 +172,42 @@ export async function importWorkbook(file,year) {
     }
   }
   if (!recognized.size) throw new Error('Nenhuma aba do modelo Contas CCS foi encontrada.');
+  const additional=modern && sheets.find(sheet=>fold(sheet.getAttribute('name'))==='cartoes adicionais');
+  if (additional) {
+    const cells=readSheet(additional);
+    const rows=[...new Set([...cells.keys()].filter(address=>/^[A-H]\d+$/.test(address)).map(address=>Number(address.slice(1))))]
+      .filter(row=>row>=6).sort((a,b)=>a-b);
+    const types={'compra a vista':'purchase','assinatura':'subscription','parcelamento':'installment'};
+    for (const row of rows) {
+      const [period,cardName,description,amount,type,part,count,day]=[...'ABCDEFGH'].map(col=>cells.get(col+row)?.value);
+      if ([period,cardName,description,amount,type,part,count,day].every(value=>value===undefined || value==='')) continue;
+      const key=fold(cardName);
+      const monthIndex=Number.isInteger(period) ? period-1 : months.indexOf(fold(period).slice(0,3));
+      const kind=types[fold(type)];
+      const error=message=>new Error('Cartões adicionais, linha '+row+'. '+message);
+      if (monthIndex<0 || monthIndex>11 || !key || !name(description) || !number(amount) || !Object.hasOwn(types,fold(type))) {
+        throw error('Preencha mês, cartão, descrição, valor e tipo.');
+      }
+      if (day!==undefined && day!=='' && ![5,20].includes(Number(day))) throw error('O dia deve ser 5 ou 20.');
+      if (kind==='installment' && (!Number.isInteger(part) || !Number.isInteger(count) || part<1 || count<part || count>600)) {
+        throw error('Preencha o número da parcela e o total de parcelas.');
+      }
+      let card=knownCards.get(key);
+      if (!card) {
+        const id='import-'+await hash(new TextEncoder().encode(key));
+        card={id,name:name(cardName),day:day ? Number(day):20,archived:false};
+        knownCards.set(key,card);
+      }
+      if (!existingCards.some(existing=>existing.id===card.id) && day && Number(day)!==card.day) {
+        throw error('Use o mesmo dia de pagamento para todos os lançamentos desse cartão.');
+      }
+      changes.set(cardKey(card.id),{type:'card',...card,archived:card.archived ?? false});
+      changes.set('entry:'+source+':'+year+':card:'+row,{type:'entry',card:card.id,
+        month:year+'-'+String(monthIndex+1).padStart(2,'0'),date:'',name:name(description),amount:cent(amount),kind,
+        ...(kind==='installment'?{part,count}:{})});
+    }
+  }
   const key='import:'+year+':'+source;
   changes.set(key,{type:'import',name:file.name.slice(0,300)});
-  return {key,changes,months:recognized.size,notes};
+  return {key,changes,year,months:recognized.size,notes};
 }

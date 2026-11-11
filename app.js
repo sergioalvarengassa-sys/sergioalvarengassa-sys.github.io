@@ -80,8 +80,21 @@ function monthly(data) {
   const input=incomes.map(([id,label,value])=>'<label class="income">'+label+
     '<input inputmode="decimal" autocomplete="off" data-income="'+id+'" placeholder="R$ 0,00" value="'+
     (value===undefined?'':inputMoney(value))+'"></label>').join('');
-  const rows=data.fixed.map((item,index)=>'<tr><td>'+text(item.name)+'</td><td>'+item.day+
-    '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+click('Editar','fixed:'+index)+'</td></tr>');
+  const row=(item,index)=>'<tr><td>'+text(item.name)+'</td><td>'+item.day+
+    '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+click('Editar','fixed:'+index)+'</td></tr>';
+  const rows=[],groups=new Map();
+  data.fixed.forEach((item,index)=>{
+    if (!item.group) {rows.push(row(item,index));return;}
+    const key=item.day+':'+item.group.toLocaleLowerCase('pt-BR');
+    if (!groups.has(key)) groups.set(key,{name:item.group,day:item.day,amount:0,rows:[]});
+    const group=groups.get(key);
+    group.rows.push(row(item,index));
+    group.amount+=item.amount;
+  });
+  for (const group of groups.values()) {
+    rows.push('<tr class="fixed-group"><th colspan="4" scope="rowgroup">'+text(group.name)+
+      ' · dia '+group.day+' · '+cash(group.amount)+'</th></tr>',...group.rows);
+  }
   const fixed=section('Gastos fixos',rows.length?table([['Conta'],['Dia'],['Valor','amount'],['']],rows):
     empty('Adicione sua primeira despesa fixa.'),click('+ Despesa fixa','fixed:new'));
   const billed=data.cards.map(card=>({...card,amount:sum(data.entries.filter(item=>item.card===card.id))}))
@@ -154,7 +167,8 @@ function fixedEditor(item) {
     const recurring=data.get('scope')==='future';
     const name=removed ? item.name : String(data.get('name')).trim();
     if (!name) throw new Error('Informe o nome da conta.');
-    const value={type:'fixed',name,series,month:selectedMonth,day:Number(data.get('day')),
+    const group=removed ? (item.group || '') : String(data.get('group')).trim();
+    const value={type:'fixed',name,series,group,month:selectedMonth,day:Number(data.get('day')),
       amount:removed?0:cents(data.get('amount')),recurring,removed};
     const changes=new Map([[fixedKey(value),value]]);
     if (recurring) {
@@ -170,6 +184,9 @@ function fixedEditor(item) {
   form(item?'Editar despesa fixa':'Adicionar despesa fixa',
     field('Conta','name',item?.name,'required maxlength="250"')+
     field('Valor (R$)','amount',item?inputMoney(item.amount):'','required inputmode="decimal"')+
+    field('Grupo de despesas (opcional)','group',item?.group,'maxlength="100" list="fixed-groups"')+
+    '<datalist id="fixed-groups">'+[...new Set(project(heads,selectedMonth).fixed.map(item=>item.group).filter(Boolean))]
+      .map(group=>'<option value="'+text(group)+'"></option>').join('')+'</datalist>'+
     select('Separar do recebimento','day',days,item?.day || 5)+select('Aplicar','scope',scopes,item?'single':'future'),
     data=>save(data),item?data=>save(data,true):null);
 }
@@ -326,10 +343,12 @@ function sync(force=false) {
 }
 function importer() {
   form('Importar planilha XLSX',field('Planilha','file','','type="file" accept=".xlsx" required')+
-    field('Ano das abas','year',month.value.slice(0,4),'type="number" min="1900" max="9998" required'),
+    field('Ano (para planilhas antigas)','year','','type="number" min="1900" max="9998"')+
+    '<small>No modelo novo, preencha o ano na aba Como preencher. Para arquivos antigos, informe o ano aqui.</small>',
     async values=>{
       const {importWorkbook}=await import('./import.js');
-      const result=await importWorkbook(values.get('file'),Number(values.get('year')));
+      const yearInput=values.get('year');
+      const result=await importWorkbook(values.get('file'),yearInput ? Number(yearInput) : undefined,project(heads,month.value).cards);
       if (heads.has(result.key)) throw new Error('Esta planilha já foi importada para o ano informado.');
       for (const [key,value] of result.changes) {
         if (value.type==='card' && heads.get(key)?.[0].value) result.changes.delete(key);
@@ -339,7 +358,7 @@ function importer() {
         throw new Error('Importação cancelada.');
       }
       await commit(result.changes);
-      const year=values.get('year');
+      const year=String(result.year);
       if (month.value.slice(0,4)!==year) {
         chooseMonth(year+'-01');
       }
