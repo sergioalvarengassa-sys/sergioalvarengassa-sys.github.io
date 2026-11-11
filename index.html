@@ -1,0 +1,39 @@
+<!doctype html>
+<html lang="pt-BR">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1">
+<meta name="theme-color" content="#112e47">
+<title>Contas CCS</title>
+<link rel="icon" href="icon.svg" type="image/svg+xml">
+<link rel="manifest" href="manifest.webmanifest">
+<link rel="stylesheet" href="style.css">
+<script type="module" src="app.js"></script>
+</head>
+<body>
+<header class="top">
+  <div class="top-inner">
+    <a class="brand" href="./"><img src="icon.svg" alt="">Contas CCS</a>
+    <button id="settings" type="button" class="outline">Dados e sincronização</button>
+  </div>
+</header>
+<main>
+  <div class="toolbar">
+    <div class="month-controls">
+      <button id="prev" type="button" aria-label="Mês anterior">‹</button>
+      <input type="month" id="month" aria-label="Mês do relatório" min="1900-01" max="9998-12">
+      <button id="next" type="button" aria-label="Próximo mês">›</button>
+    </div>
+    <span id="sync-state" class="sync-state" role="status">Abrindo base local…</span>
+  </div>
+  <nav id="tabs" aria-label="Relatórios"></nav>
+  <div id="alert" role="status" hidden></div>
+  <section id="view" aria-label="Relatório"></section>
+</main>
+<footer class="app-footer"><a href="privacidade.html">Privacidade</a></footer>
+<dialog id="dialog">
+  <header><h2 id="dialog-title"></h2><button id="close-dialog" type="button" aria-label="Fechar">×</button></header>
+  <div id="dialog-body"></div>
+</dialog>
+</body>
+</html>
