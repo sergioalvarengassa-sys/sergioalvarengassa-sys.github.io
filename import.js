@@ -203,7 +203,8 @@ export async function importWorkbook(file,year,existingCards=[]) {
       const recurring=scheduled && kind==='subscription';
       let slices=[{month,amount:money,...(kind==='installment'?{part,count}:{})}];
       if (scheduled && kind==='installment') {
-        try {slices=installments(money,part,count,month);} catch (cause) {throw error(cause.message);}
+        try {slices=installments(money,part,count,month).map(slice=>({...slice,installmentId:series}));}
+        catch (cause) {throw error(cause.message);}
       }
       if (isAccount) {
         for (const slice of slices) {

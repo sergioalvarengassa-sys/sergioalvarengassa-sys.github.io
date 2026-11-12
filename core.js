@@ -82,6 +82,13 @@ export function installments(amount, part, count, month, fromTotal=false) {
     month:shiftMonth(month,offset),part:part+offset,count
   }));
 }
+export function parcelInfo(item) {
+  if (item.part) return {part:item.part,count:item.count};
+  if (item.type!=='fixed' || item.recurring || !item.series.startsWith('import-')) return null;
+  const match=item.name.match(/\b(\d{1,3})\s*\/\s*(\d{1,3})\b/);
+  const part=Number(match?.[1]),count=Number(match?.[2]);
+  return part>=1 && count>=2 && part<=count ? {part,count} : null;
+}
 export function openDatabase() {
   return new Promise((resolve,reject) => {
     const request = indexedDB.open('contas-ccs',1);
@@ -150,10 +157,12 @@ export function validateBatch(batch) {
     if (v.type==='fixed') return str(v.series,100) && [5,20].includes(v.day) &&
       typeof v.recurring==='boolean' && typeof v.removed==='boolean' &&
       (v.part===undefined ? v.count===undefined : installment(v) && !v.recurring) &&
-      (v.group===undefined || typeof v.group==='string' && v.group.length<=100) && optionalStyle(v.icon);
+      (v.group===undefined || typeof v.group==='string' && v.group.length<=100) && optionalStyle(v.icon) &&
+      (v.installmentId===undefined || v.part!==undefined && str(v.installmentId,100));
     return str(v.card,100) && Object.hasOwn(kinds,v.kind) && optionalStyle(v.icon) &&
       (v.date === '' || (typeof v.date==='string' && /^\d{4}-\d{2}-\d{2}$/.test(v.date))) &&
       (v.kind!=='installment' || installment(v)) &&
+      (v.installmentId===undefined || v.kind==='installment' && str(v.installmentId,100)) &&
       (v.series===undefined || (v.kind==='subscription' && str(v.series,100) &&
         typeof v.recurring==='boolean' && typeof v.removed==='boolean'));
   });

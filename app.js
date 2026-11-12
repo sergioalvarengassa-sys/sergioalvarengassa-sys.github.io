@@ -1,4 +1,4 @@
-import {money,currentMonth,shiftMonth,cents,inputMoney,kinds,sum,cardKey,newId,validMonth,revisions,project,cardEntries,installments,
+import {money,currentMonth,shiftMonth,cents,inputMoney,kinds,sum,cardKey,newId,validMonth,revisions,project,cardEntries,installments,parcelInfo,
   openDatabase,read,write,bindAccount,validateBatch} from './core.js';
 import * as drive from './drive.js';
 import {googleClientId} from './config.js';
@@ -34,6 +34,7 @@ const iconPaths={
   calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18"/>',
   settings:'<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="8" cy="7" r="2" fill="var(--surface)"/><circle cx="16" cy="12" r="2" fill="var(--surface)"/><circle cx="10" cy="17" r="2" fill="var(--surface)"/>',
   edit:'<path d="m15 5 4 4M4 20l4-1 12-12a2.8 2.8 0 0 0-4-4L4 15z"/>',
+  trash:'<path d="M3 6h18M9 6V4h6v2M5 6l1 15h12l1-15M10 10v7m4-7v7"/>',
   chevron:'<path d="m9 5 7 7-7 7"/>'
 };
 const icon=(name)=>'<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'+iconPaths[name]+'</svg>';
@@ -59,8 +60,11 @@ function cardColor(card) {
   const name=normalize(card.id+' '+card.name);
   return name.includes('nubank')?'purple':/mercado[ -]pago/.test(name)?'blue':'indigo';
 }
-const editButton=(item,action)=>'<button type="button" class="edit-icon" data-action="'+text(action)+
-  '" aria-label="Editar '+text(item.name)+'" title="Editar">'+icon('edit')+'</button>';
+const expenseActions=(item,action)=>'<div class="expense-actions">'+
+  '<button type="button" class="edit-icon" data-action="'+text(action)+
+  '" aria-label="Editar '+text(item.name)+'" title="Editar">'+icon('edit')+'</button>'+
+  '<button type="button" class="edit-icon delete-icon" data-action="delete:'+text(action)+
+  '" aria-label="Excluir '+text(item.name)+'" title="Excluir">'+icon('trash')+'</button></div>';
 const itemLabel=item=>'<div class="item-label"><span class="expense-icon">'+icon(expenseIcon(item))+'</span>'+
   '<span>'+text(item.name)+(item.part?' <small>('+item.part+' de '+item.count+')</small>':'')+
   (item.type==='entry' && item.recurring?' <small>· mensal</small>':'')+'</span></div>';
@@ -142,7 +146,7 @@ function monthly(data) {
     '<input inputmode="decimal" autocomplete="off" data-income="'+id+'" placeholder="R$ 0,00" value="'+
     (value===undefined?'':inputMoney(value))+'"></label>').join('');
   const row=(item,index)=>'<tr><td>'+itemLabel(item)+'</td><td class="expense-day">'+item.day+
-    '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+editButton(item,'fixed:'+index)+'</td></tr>';
+    '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+expenseActions(item,'fixed:'+index)+'</td></tr>';
   const rows=[],groups=new Map();
   data.fixed.forEach((item,index)=>{
     if (!item.group) {rows.push(row(item,index));return;}
@@ -185,7 +189,7 @@ function statement(card) {
     const group=entries.filter(([,item])=>item.kind===kind);
     const rows=group.map(([key,item])=>'<tr><td>'+itemLabel(item)+
       '</td><td class="minor">'+text(item.date ? item.date.split('-').reverse().join('/') : '—')+'</td><td class="amount">'+
-      cash(item.amount)+'</td><td class="action-cell">'+editButton(item,'entry:'+key)+'</td></tr>');
+      cash(item.amount)+'</td><td class="action-cell">'+expenseActions(item,'entry:'+key)+'</td></tr>');
     return section(label+' · '+cash(sum(group.map(([,item])=>item))),
       rows.length?table([['Descrição'],['Data','minor'],['Valor','amount'],['']],rows):empty('Nenhum lançamento neste mês.'));
   }).join('');
@@ -201,10 +205,12 @@ function show(title,html) {
 const field=(label,name,value='',attrs='')=>'<label>'+text(label)+'<input name="'+name+'" value="'+text(value)+'" '+attrs+'></label>';
 const select=(label,name,options,selected)=>'<label>'+text(label)+'<select name="'+name+'">'+options.map(([id,title])=>
   '<option value="'+text(id)+'" '+(String(id)===String(selected)?'selected':'')+'>'+text(title)+'</option>').join('')+'</select></label>';
-function form(title,fields,save,remove,removeLabel='Retirar') {
+function form(title,fields,save,remove,removeLabel='Retirar',saveLabel='Salvar') {
+  const deleting=saveLabel==='Excluir';
   show(title,'<form>'+fields+'<p class="form-error" role="alert" hidden></p><div class="dialog-actions">'+
     (remove?'<button type="button" id="remove" class="danger">'+text(removeLabel)+'</button>':'')+
-    '<button type="submit" class="primary">Salvar</button></div></form>');
+    (deleting?'<button type="button" id="cancel-delete">Cancelar</button>':'')+
+    '<button type="submit" class="'+(deleting?'delete-confirm':'primary')+'">'+text(saveLabel)+'</button></div></form>');
   const node=$('#dialog-body form');
   const run=async operation=>{
     const data=new FormData(node);
@@ -222,6 +228,7 @@ function form(title,fields,save,remove,removeLabel='Retirar') {
   };
   node.addEventListener('submit',event=>{event.preventDefault();void run(save);});
   if (remove) $('#remove').onclick=()=>void run(remove);
+  if (deleting) $('#cancel-delete').onclick=()=>dialog.close();
   return node;
 }
 const days=[[5,'Pagamento · dia 5'],[20,'Vale · dia 20']];
@@ -239,20 +246,19 @@ function toggleFields(node,selector,visible) {
 function fixedEditor(item) {
   const selectedMonth=month.value;
   const series=item?.series || newId();
-  const save=(data,removed=false)=>{
-    const kind=removed ? (item.part?'installment':item.recurring?'subscription':'purchase') : data.get('kind');
-    const recurring=removed ? !item.part && data.get('scope')==='future' :
-      kind==='subscription' && (!item || data.get('scope')==='future');
-    const name=removed ? item.name : String(data.get('name')).trim();
+  const save=data=>{
+    const kind=data.get('kind');
+    const recurring=kind==='subscription' && (!item || data.get('scope')==='future');
+    const name=String(data.get('name')).trim();
     if (!name) throw new Error('Informe o nome da conta.');
-    const group=removed ? (item.group || '') : String(data.get('group')).trim();
+    const group=String(data.get('group')).trim();
     const value={type:'fixed',name,series,group,month:selectedMonth,day:Number(data.get('day')),
-      amount:removed?0:cents(data.get('amount')),recurring,removed,
-      icon:choice(expenseIcons,removed?item.icon:data.get('icon'))};
-    if (!removed && kind==='installment') {
+      amount:cents(data.get('amount')),recurring,removed:false,icon:choice(expenseIcons,data.get('icon'))};
+    if (kind==='installment') {
       const schedule=installments(value.amount,Number(data.get('part')),Number(data.get('count')),selectedMonth,data.get('amountBasis')==='total');
+      const installmentId=item?.part ? item.installmentId : newId();
       const changes=new Map((item?.part ? schedule.slice(0,1) : schedule).map(slice=>{
-        const expense={...value,...slice};
+        const expense={...value,...slice,...(installmentId?{installmentId}:{})};
         return [fixedKey(expense),expense];
       }));
       if (item && !item.part) {
@@ -266,7 +272,6 @@ function fixedEditor(item) {
       }
       return commit(changes);
     }
-    if (removed && item.part) Object.assign(value,{part:item.part,count:item.count});
     const changes=new Map([[fixedKey(value),value]]);
     if (recurring) {
       for (const [key,list] of heads) {
@@ -291,7 +296,7 @@ function fixedEditor(item) {
     select('Ícone da despesa','icon',expenseIcons,choice(expenseIcons,item?.icon))+
     select('Separar do recebimento','day',days,item?.day || 5)+
     (item && !item.part ? '<fieldset data-fixed-scope>'+select('Aplicar','scope',scopes,'single')+'</fieldset>' : ''),
-    data=>save(data),item?data=>save(data,true):null);
+    save);
   const toggle=()=>{
     const installment=node.elements.kind.value==='installment';
     toggleFields(node,'[data-installments]',installment);
@@ -334,19 +339,18 @@ function entryEditor(key) {
   if (item?.kind==='review') kindOptions.push(['review','Para revisar']);
   const series=item?.series || newId();
 
-  function save(data,removed=false) {
-    const kind=removed ? item.kind : data.get('kind');
+  function save(data) {
+    const kind=data.get('kind');
     const target=String(data.get('month'));
     const future=data.get('scope')==='future';
-    if (removed && !item.series) return commit(new Map([[key,null]]));
-    const value={type:'entry',name:removed?item.name:String(data.get('name')).trim(),month:target,
-      amount:removed?0:cents(data.get('amount')),kind,card:removed?item.card:String(data.get('card')),date:String(data.get('date')),
-      icon:choice(expenseIcons,removed?item.icon:data.get('icon'))};
+    const value={type:'entry',name:String(data.get('name')).trim(),month:target,
+      amount:cents(data.get('amount')),kind,card:String(data.get('card')),date:String(data.get('date')),
+      icon:choice(expenseIcons,data.get('icon'))};
     if (!value.name || !validMonth(target) || !value.card) throw new Error('Preencha a descrição, a fatura e o cartão.');
 
     if (kind==='subscription' && (future || item?.series)) {
       const ruleKey='entry:sub:'+series+':'+target+(future?':rec':'');
-      const changes=new Map([[ruleKey,{...value,series,recurring:future,removed}]]);
+      const changes=new Map([[ruleKey,{...value,series,recurring:future,removed:false}]]);
       if (item && !item.series) changes.set(key,null);
       if (future) {
         for (const [previous,[{value:record}]] of heads) {
@@ -360,9 +364,11 @@ function entryEditor(key) {
     if (kind==='installment') {
       const schedule=installments(value.amount,Number(data.get('part')),Number(data.get('count')),target,data.get('amountBasis')==='total');
       const editingParcel=item?.kind==='installment';
+      const installmentId=editingParcel ? item.installmentId : newId();
       const slices=editingParcel ? schedule.slice(0,1) : schedule;
       const changes=new Map(slices.map((slice,index)=>[
-        item && !item.series && index===0 ? key : 'entry:'+newId(),{...value,...slice}
+        item && !item.series && index===0 ? key : 'entry:'+newId(),
+        {...value,...slice,...(installmentId?{installmentId}:{})}
       ]));
       if (item?.series) {
         const ruleKey='entry:sub:'+series+':'+target+':rec';
@@ -390,7 +396,7 @@ function entryEditor(key) {
     installmentFields(item?.part,item?.count,item?.kind==='installment')+
     '<fieldset data-subscription>'+select('Aplicar', 'scope',scopes,item?'single':'future')+
     '<small>Uma assinatura mensal aparece automaticamente nas próximas faturas.</small></fieldset>',
-    data=>save(data),item?data=>save(data,true):null);
+    save);
   const toggle=()=>{
     const kind=node.elements.kind.value;
     toggleFields(node,'[data-installments]',kind==='installment');
@@ -398,6 +404,70 @@ function entryEditor(key) {
   };
   node.elements.kind.onchange=toggle;
   toggle();
+}
+
+function matchingParcels(item,key,parcel,records) {
+  const baseName=name=>normalize(name).replace(/\b\d{1,3}\s*\/\s*\d{1,3}\b/,'').replace(/\s+/g,' ').trim();
+  const name=baseName(item.name);
+  const related=records.filter(([,value])=>{
+    if (value.type!==item.type || value.removed || value.card!==item.card) return false;
+    if (item.installmentId) return value.installmentId===item.installmentId;
+    if (value.installmentId) return false;
+    const part=parcelInfo(value);
+    if (!part || part.count!==parcel.count || value.month!==shiftMonth(item.month,part.part-parcel.part)) return false;
+    if (item.type==='fixed' && item.series===value.series) return true;
+    return value.day===item.day && (value.date || '')===(item.date || '') && baseName(value.name)===name;
+  });
+  if (!item.installmentId && new Set(related.map(([,value])=>value.month)).size!==related.length) {
+    return related.filter(([candidate])=>candidate===key);
+  }
+  return related;
+}
+
+function expenseDelete(item,key) {
+  if (!item) return;
+  const selectedMonth=month.value;
+  const fixed=item.type==='fixed';
+  const recordKey=key || fixedKey({...item,month:selectedMonth,recurring:false});
+  const snapshot=heads;
+  const records=[...snapshot].map(([id,[{value}]])=>[id,value]).filter(([,value])=>value);
+  const parcel=parcelInfo(item);
+  const series=parcel ? matchingParcels(item,recordKey,parcel,records).filter(([id])=>id!==recordKey) : [];
+  const upcoming=series.filter(([,value])=>value.month>selectedMonth);
+  const earlier=series.some(([,value])=>value.month<selectedMonth);
+  const recurring=!parcel && (fixed ? item.recurring || records.some(([,value])=>
+    value.type==='fixed' && value.series===item.series && value.recurring && !value.removed && value.month<=selectedMonth) : Boolean(item.series));
+  const choices=parcel ? [['single','Só esta parcela'],
+    ...(upcoming.length ? [['future','Esta e as próximas ('+(upcoming.length+1)+')']] : []),
+    ...(earlier ? [['all','Todas, inclusive anteriores ('+(series.length+1)+')']] : [])] : scopes;
+  const detail=parcel ? ' · parcela '+parcel.part+' de '+parcel.count : '';
+  const fields='<p><strong>'+text(item.name+detail)+'</strong> · '+cash(item.amount)+'</p>'+
+    (parcel || recurring ? select('O que excluir','scope',choices,'single') : '<p>Excluir este lançamento do mês?</p>')+
+    (parcel && !series.length && parcel.part<parcel.count ? '<small>Nenhuma outra parcela vinculada foi identificada.</small>' : '');
+
+  form('Excluir despesa',fields,data=>{
+    const scope=data.get('scope');
+    const changes=new Map();
+    const removeParcel=(id,value)=>changes.set(id,fixed ? {...value,removed:true,amount:0} : null);
+    if (parcel) {
+      const targets=scope==='all' ? series : scope==='future' ? upcoming : [];
+      removeParcel(recordKey,{...item,month:selectedMonth,recurring:false});
+      for (const [id,value] of targets) removeParcel(id,value);
+    } else if (fixed || recurring) {
+      const future=recurring && scope==='future';
+      const stop={...item,month:selectedMonth,amount:0,recurring:future,removed:true};
+      const stopKey=fixed ? fixedKey(stop) : 'entry:sub:'+item.series+':'+selectedMonth+(future?':rec':'');
+      if (future) {
+        for (const [id,value] of records) {
+          if (value.type===item.type && value.series===item.series && value.month>=selectedMonth) changes.set(id,null);
+        }
+      }
+      changes.set(stopKey,stop);
+    } else {
+      changes.set(recordKey,null);
+    }
+    return commit(changes,new Map([...changes.keys()].map(id=>[id,snapshot.get(id)?.map(op=>op.id) || []])));
+  },undefined,undefined,'Excluir');
 }
 
 function extras() {
@@ -556,6 +626,13 @@ async function action(event) {
   if (kind==='settings') settings();
   if (kind==='fixed') fixedEditor(data.fixed[Number(arg)]);
   if (kind==='entry') entryEditor(arg);
+  if (kind==='delete') {
+    if (arg.startsWith('fixed:')) expenseDelete(data.fixed[Number(arg.slice(6))]);
+    if (arg.startsWith('entry:')) {
+      const key=arg.slice(6);
+      expenseDelete(heads.get(key)?.[0].value,key);
+    }
+  }
   if (kind==='cards') cardList();
   if (kind==='card') cardEditor(data.cards.find(card=>card.id===arg));
   if (kind==='extras') extras();

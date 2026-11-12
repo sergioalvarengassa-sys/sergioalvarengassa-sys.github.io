@@ -121,6 +121,10 @@ input,select{border:1px solid #c9c2d1;border-radius:7px;background:var(--surface
 .expense-icon{display:grid;place-items:center;flex:0 0 auto;width:26px;height:26px;border-radius:7px;background:var(--lavender);color:var(--accent)}
 .expense-icon .ui-icon{width:15px;height:15px}
 .edit-icon{display:inline-grid;place-items:center;min-width:34px;min-height:32px;padding:0;border-color:transparent;color:var(--accent)}
+.expense-actions{display:flex;justify-content:flex-end;gap:.1rem}
+.delete-icon{color:var(--danger)}
+.delete-confirm{background:#a12741;border-color:#a12741;color:white}
+.delete-confirm:hover{background:#801e34}
 .row-actions,.dialog-actions{justify-content:flex-end;flex-wrap:wrap}
 .summary-line{display:flex;align-items:center;justify-content:space-between;gap:.5rem;padding:.36rem 0;border-bottom:1px solid var(--line)}
 .summary-line strong{font-variant-numeric:tabular-nums;white-space:nowrap}
