@@ -233,11 +233,13 @@ function form(title,fields,save,remove,removeLabel='Retirar',saveLabel='Salvar')
 }
 const days=[[5,'Pagamento · dia 5'],[20,'Vale · dia 20']];
 const scopes=[['single','Só neste mês'],['future','Neste mês e nos próximos']];
-const installmentFields=(part=1,count=2,editing=false)=>'<fieldset data-installments>'+
+const installmentFields=(part=1,count=2,editing=false,editScope)=>'<fieldset data-installments>'+
   field('Parcela atual','part',part,'type="number" required min="1" max="600"')+
   field('Total de parcelas','count',count,'type="number" required min="2" max="600"')+
   (editing?'':select('Valor informado','amountBasis',[['parcel','Valor de uma parcela'],['total','Valor total da compra']],'parcel'))+
-  '<small>'+(editing?'Alterações nesta tela valem para a parcela selecionada.':
+  (editScope ? select('Aplicar às parcelas','parcelScope',[['single','Só esta parcela'],['future','Esta e as próximas']],editScope) : '')+
+  '<small>'+(editScope?'Use Esta e as próximas para atualizar as cobranças existentes e gerar as que faltam.':
+    editing?'Alterações nesta tela valem para a parcela selecionada.':
     'O app lança da parcela atual até a última.')+'</small></fieldset>';
 function toggleFields(node,selector,visible) {
   const fields=node.querySelector(selector);
@@ -348,6 +350,11 @@ function entryEditor(key) {
   const kindOptions=[['purchase','Compra à vista'],['subscription','Assinatura'],['installment','Parcelamento']];
   if (item?.kind==='review') kindOptions.push(['review','Para revisar']);
   const series=item?.series || newId();
+  const editingParcel=item?.kind==='installment';
+  const related=editingParcel ? matchingParcels(item,item,[...heads].map(([id,[{value}]])=>[id,value])
+    .filter(([,value])=>value)) : [];
+  const editScope=editingParcel && related && item.part<item.count &&
+    !related.some(([,record])=>record.month>item.month) ? 'future' : 'single';
 
   function save(data) {
     const selectedKind=data.get('kind');
@@ -374,7 +381,25 @@ function entryEditor(key) {
     }
     if (kind==='installment') {
       const schedule=installments(value.amount,Number(data.get('part')),Number(data.get('count')),target,data.get('amountBasis')==='total');
-      const editingParcel=item?.kind==='installment';
+      if (editingParcel && data.get('parcelScope')==='future') {
+        if (!related) throw new Error('Há parcelas antigas com a mesma identificação. Use Só esta parcela para editar sem misturar compras.');
+        const installmentId=item.installmentId || newId();
+        const prior=related.filter(([,record])=>record.month<item.month);
+        if (prior.some(([,record])=>record.month>=target)) {
+          throw new Error('Escolha um mês posterior às parcelas anteriores já registradas.');
+        }
+        const upcoming=related.filter(([id,record])=>id!==key && record.month>=item.month);
+        const byMonth=new Map(upcoming.map(([id,record])=>[record.month,id]));
+        const changes=new Map(upcoming.map(([id])=>[id,null]));
+        for (const [index,slice] of schedule.entries()) {
+          const id=index===0 ? key : byMonth.get(slice.month) || 'entry:'+newId();
+          changes.set(id,{...value,...slice,installmentId});
+        }
+        for (const [id,record] of prior) {
+          if (!record.installmentId) changes.set(id,{...record,installmentId});
+        }
+        return commit(changes);
+      }
       const installmentId=editingParcel ? item.installmentId : newId();
       const slices=editingParcel ? schedule.slice(0,1) : schedule;
       const changes=new Map(slices.map((slice,index)=>[
@@ -404,14 +429,14 @@ function entryEditor(key) {
       'type="month" required min="1900-01" max="9998-12"'+(item?.series?' readonly':''))+
     select('Tipo','kind',item?.series ? kindOptions.filter(([kind])=>kind!=='purchase') : kindOptions,item?.kind || 'purchase')+
     field('Valor (R$)','amount',item?inputMoney(item.amount):'','required inputmode="decimal"')+
-    installmentFields(item?.part,item?.count,item?.kind==='installment')+
+    installmentFields(item?.part,item?.count,editingParcel,editingParcel?editScope:undefined)+
     '<fieldset data-subscription>'+select('Aplicar', 'scope',scopes,!item || item.recurring?'future':'single')+
     '<small>Uma assinatura mensal aparece automaticamente nas próximas faturas.</small></fieldset>',
     save);
   bindScheduleFields(node,'[data-subscription]',Boolean(item));
 }
 
-function matchingParcels(item,key,parcel,records) {
+function matchingParcels(item,parcel,records) {
   const baseName=name=>normalize(name).replace(/\b\d{1,3}\s*\/\s*\d{1,3}\b/,'').replace(/\s+/g,' ').trim();
   const name=baseName(item.name);
   const related=records.filter(([,value])=>{
@@ -424,7 +449,7 @@ function matchingParcels(item,key,parcel,records) {
     return value.day===item.day && (value.date || '')===(item.date || '') && baseName(value.name)===name;
   });
   if (!item.installmentId && new Set(related.map(([,value])=>value.month)).size!==related.length) {
-    return related.filter(([candidate])=>candidate===key);
+    return null;
   }
   return related;
 }
@@ -437,7 +462,7 @@ function expenseDelete(item,key) {
   const snapshot=heads;
   const records=[...snapshot].map(([id,[{value}]])=>[id,value]).filter(([,value])=>value);
   const parcel=parcelInfo(item);
-  const series=parcel ? matchingParcels(item,recordKey,parcel,records).filter(([id])=>id!==recordKey) : [];
+  const series=parcel ? (matchingParcels(item,parcel,records) || []).filter(([id])=>id!==recordKey) : [];
   const upcoming=series.filter(([,value])=>value.month>selectedMonth);
   const earlier=series.some(([,value])=>value.month<selectedMonth);
   const recurring=!parcel && (fixed ? item.recurring || records.some(([,value])=>
