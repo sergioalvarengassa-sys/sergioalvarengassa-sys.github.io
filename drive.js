@@ -23,14 +23,17 @@ export function disconnect() {
   token = undefined;
   expires = 0;
 }
-export async function authorize(clientId) {
+export async function authorize(clientId, email) {
   if (!globalThis.google?.accounts?.oauth2) throw new Error('Aguarde o carregamento do login e tente novamente.');
   const response = await new Promise((resolve,reject) => {
     const client = google.accounts.oauth2.initTokenClient({
       client_id:clientId, scope, callback:resolve,
       error_callback: error => reject(new Error('Login Google: '+error.type))
     });
-    client.requestAccessToken({prompt:requestConsent ? 'select_account consent' : 'select_account'});
+    client.requestAccessToken({
+      ...(email ? {login_hint:email} : {}),
+      prompt:requestConsent ? 'consent' : email ? '' : 'select_account'
+    });
   });
   if (response.error) {
     requestConsent = response.error === 'access_denied';

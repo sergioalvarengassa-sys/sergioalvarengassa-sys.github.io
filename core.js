@@ -49,17 +49,37 @@ export function project(heads, month) {
     .map(item => item.group===undefined && item.series.startsWith('import-') && /\bd[eé]b\.?\s*$/i.test(item.name)
       ? {...item,group:'Débitos'} : item)
     .sort((a,b) => a.day-b.day || a.name.localeCompare(b.name,'pt-BR'));
-  const entries = byType('entry').filter(item => item.month === month)
-    .sort((a,b) => (a.date || '').localeCompare(b.date || '') || a.name.localeCompare(b.name,'pt-BR'));
+  const entries = cardEntries(heads,month).map(([,item])=>item);
   const income = key => heads.get('income:'+month+':'+key)?.[0].value?.amount;
   return {cards,fixed,entries,payment:income('payment'),advance:income('advance'),extra5:income('extra5'),extra20:income('extra20')};
 }
-export function distribute(total, count, month) {
-  const base = Math.trunc(total/count);
-  const remainder = total - base*count;
-  return Array.from({length:count}, (_,index) => ({
-    amount:base + (index < Math.abs(remainder) ? Math.sign(remainder) : 0),
-    month:shiftMonth(month,index),part:index+1,count
+export function cardEntries(heads, month) {
+  const direct=[], series=new Map();
+  for (const [key,[{value:item}]] of heads) {
+    if (item?.type!=='entry') continue;
+    if (!item.series) {
+      if (item.month===month) direct.push([key,item]);
+      continue;
+    }
+    if (item.month>month || (!item.recurring && item.month!==month)) continue;
+    const previous=series.get(item.series)?.[1];
+    if (!previous || previous.month<item.month || (previous.month===item.month && !item.recurring)) {
+      series.set(item.series,[key,item]);
+    }
+  }
+  return [...direct,...[...series.values()].filter(([,item])=>!item.removed)]
+    .sort(([,a],[,b])=>(a.date || '').localeCompare(b.date || '') || a.name.localeCompare(b.name,'pt-BR'));
+}
+export function installments(amount, part, count, month, fromTotal=false) {
+  if (!Number.isInteger(part) || !Number.isInteger(count) || part<1 || count<2 || part>count ||
+    count>600 || !validMonth(month) || !validMonth(shiftMonth(month,count-part))) {
+    throw new Error('Informe uma parcela atual e um total válidos para o mês escolhido.');
+  }
+  const base=fromTotal ? Math.trunc(amount/count) : amount;
+  const remainder=fromTotal ? amount-base*count : 0;
+  return Array.from({length:count-part+1},(_,offset)=>({
+    amount:base+(part+offset<=Math.abs(remainder)?Math.sign(remainder):0),
+    month:shiftMonth(month,offset),part:part+offset,count
   }));
 }
 export function openDatabase() {
@@ -112,6 +132,8 @@ const TYPES = new Set(['card','fixed','entry','income','import']);
 export function validateBatch(batch) {
   const str = (value,max=300) => typeof value === 'string' && value.length>0 && value.length<=max;
   const amount = value => Number.isSafeInteger(value) && Math.abs(value)<=1e12;
+  const installment=value=>Number.isInteger(value.part) && Number.isInteger(value.count) &&
+    value.part>=1 && value.count>=value.part && value.count<=600;
   if (batch?.schema !== 1 || !str(batch.id,80) || !Array.isArray(batch.ops) || batch.ops.length>20000) return false;
   return batch.ops.every(op => {
     if (!op || !str(op.id,100) || !str(op.key,300) || !Array.isArray(op.parents) ||
@@ -125,10 +147,12 @@ export function validateBatch(batch) {
     if (!str(v.name) || !amount(v.amount) || !validMonth(v.month)) return false;
     if (v.type==='fixed') return str(v.series,100) && [5,20].includes(v.day) &&
       typeof v.recurring==='boolean' && typeof v.removed==='boolean' &&
+      (v.part===undefined ? v.count===undefined : installment(v) && !v.recurring) &&
       (v.group===undefined || typeof v.group==='string' && v.group.length<=100);
     return str(v.card,100) && Object.hasOwn(kinds,v.kind) &&
       (v.date === '' || (typeof v.date==='string' && /^\d{4}-\d{2}-\d{2}$/.test(v.date))) &&
-      (v.kind!=='installment' || (Number.isInteger(v.part) && Number.isInteger(v.count) &&
-        v.part>=1 && v.count>=v.part && v.count<=600));
+      (v.kind!=='installment' || installment(v)) &&
+      (v.series===undefined || (v.kind==='subscription' && str(v.series,100) &&
+        typeof v.recurring==='boolean' && typeof v.removed==='boolean'));
   });
 }

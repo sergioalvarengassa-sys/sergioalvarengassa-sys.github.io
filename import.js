@@ -1,5 +1,5 @@
 import {unzipSync,strFromU8} from './fflate.js';
-import {cardKey,sum} from './core.js';
+import {cardKey,sum,installments} from './core.js';
 
 const months=['jan','fev','mar','abr','mai','jun','jul','ago','set','out','nov','dez'];
 const fold=text=>String(text ?? '').trim().toLowerCase().normalize('NFD').replace(/\p{Diacritic}/gu,'');
@@ -172,25 +172,46 @@ export async function importWorkbook(file,year,existingCards=[]) {
     }
   }
   if (!recognized.size) throw new Error('Nenhuma aba do modelo Contas CCS foi encontrada.');
-  const additional=modern && sheets.find(sheet=>fold(sheet.getAttribute('name'))==='cartoes adicionais');
-  if (additional) {
+  const supplementary=modern ? sheets.filter(sheet=>['cartoes adicionais','lancamentos programados'].includes(fold(sheet.getAttribute('name')))) : [];
+  const existingIds=new Set(existingCards.map(card=>card.id));
+  const explicitDays=new Map();
+  for (const additional of supplementary) {
+    const scheduled=fold(additional.getAttribute('name'))==='lancamentos programados';
     const cells=readSheet(additional);
-    const rows=[...new Set([...cells.keys()].filter(address=>/^[A-H]\d+$/.test(address)).map(address=>Number(address.slice(1))))]
+    const rows=[...new Set([...cells.keys()].filter(address=>/^[A-I]\d+$/.test(address)).map(address=>Number(address.slice(1))))]
       .filter(row=>row>=6).sort((a,b)=>a-b);
-    const types={'compra a vista':'purchase','assinatura':'subscription','parcelamento':'installment'};
+    const types={'compra a vista':'purchase','assinatura':'subscription','parcelamento':'installment',
+      ...(scheduled ? {unica:'purchase',mensal:'subscription'} : {})};
     for (const row of rows) {
-      const [period,cardName,description,amount,type,part,count,day]=[...'ABCDEFGH'].map(col=>cells.get(col+row)?.value);
-      if ([period,cardName,description,amount,type,part,count,day].every(value=>value===undefined || value==='')) continue;
+      const [period,cardName,description,amount,type,part,count,day,group]=[...'ABCDEFGHI'].map(col=>cells.get(col+row)?.value);
+      if ([period,cardName,description,amount,type,part,count,day,group].every(value=>value===undefined || value==='')) continue;
       const key=fold(cardName);
+      const isAccount=scheduled && key==='conta';
       const monthIndex=Number.isInteger(period) ? period-1 : months.indexOf(fold(period).slice(0,3));
       const kind=types[fold(type)];
-      const error=message=>new Error('Cartões adicionais, linha '+row+'. '+message);
+      const error=message=>new Error(additional.getAttribute('name')+', linha '+row+'. '+message);
       if (monthIndex<0 || monthIndex>11 || !key || !name(description) || !number(amount) || !Object.hasOwn(types,fold(type))) {
-        throw error('Preencha mês, cartão, descrição, valor e tipo.');
+        throw error('Preencha mês, destino, descrição, valor e tipo.');
       }
       if (day!==undefined && day!=='' && ![5,20].includes(Number(day))) throw error('O dia deve ser 5 ou 20.');
       if (kind==='installment' && (!Number.isInteger(part) || !Number.isInteger(count) || part<1 || count<part || count>600)) {
         throw error('Preencha o número da parcela e o total de parcelas.');
+      }
+      const month=year+'-'+String(monthIndex+1).padStart(2,'0');
+      const money=cent(amount);
+      const series='sched-'+source+'-'+year+'-'+row;
+      const recurring=scheduled && kind==='subscription';
+      let slices=[{month,amount:money,...(kind==='installment'?{part,count}:{})}];
+      if (scheduled && kind==='installment') {
+        try {slices=installments(money,part,count,month);} catch (cause) {throw error(cause.message);}
+      }
+      if (isAccount) {
+        for (const slice of slices) {
+          const item={type:'fixed',series,name:name(description),day:Number(day || 5),
+            group:name(group).slice(0,100),recurring,removed:false,...slice};
+          changes.set('fixed:'+series+':'+slice.month+(recurring?':rec':''),item);
+        }
+        continue;
       }
       let card=knownCards.get(key);
       if (!card) {
@@ -198,13 +219,23 @@ export async function importWorkbook(file,year,existingCards=[]) {
         card={id,name:name(cardName),day:day ? Number(day):20,archived:false};
         knownCards.set(key,card);
       }
-      if (!existingCards.some(existing=>existing.id===card.id) && day && Number(day)!==card.day) {
-        throw error('Use o mesmo dia de pagamento para todos os lançamentos desse cartão.');
+      if (!existingIds.has(card.id) && day) {
+        const selectedDay=Number(day);
+        if (explicitDays.has(card.id) && explicitDays.get(card.id)!==selectedDay) {
+          throw error('Use o mesmo dia de pagamento para todos os lançamentos desse cartão.');
+        }
+        explicitDays.set(card.id,selectedDay);
+        card={...card,day:selectedDay};
+        knownCards.set(key,card);
       }
       changes.set(cardKey(card.id),{type:'card',...card,archived:card.archived ?? false});
-      changes.set('entry:'+source+':'+year+':card:'+row,{type:'entry',card:card.id,
-        month:year+'-'+String(monthIndex+1).padStart(2,'0'),date:'',name:name(description),amount:cent(amount),kind,
-        ...(kind==='installment'?{part,count}:{})});
+      for (const slice of slices) {
+        const entry={type:'entry',card:card.id,date:'',name:name(description),kind,...slice,
+          ...(recurring?{series,recurring:true,removed:false}:{})};
+        const entryKey=recurring ? 'entry:sub:'+series+':'+slice.month+':rec' :
+          scheduled ? 'entry:'+series+':'+slice.month : 'entry:'+source+':'+year+':card:'+row;
+        changes.set(entryKey,entry);
+      }
     }
   }
   const key='import:'+year+':'+source;

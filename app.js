@@ -1,4 +1,4 @@
-import {money,currentMonth,shiftMonth,cents,inputMoney,kinds,sum,cardKey,newId,validMonth,revisions,project,distribute,
+import {money,currentMonth,shiftMonth,cents,inputMoney,kinds,sum,cardKey,newId,validMonth,revisions,project,cardEntries,installments,
   openDatabase,read,write,bindAccount,validateBatch} from './core.js';
 import * as drive from './drive.js';
 import {googleClientId} from './config.js';
@@ -11,6 +11,7 @@ const text = value => String(value ?? '').replace(/[&<>"']/g,char=>({'&':'&amp;'
 const month = $('#month');
 month.value=currentMonth();
 let db, batches=[], heads=new Map(), account, active='monthly', syncing, connectedAccount, reviewCount=0;
+let authorizing=false;
 const channel=typeof BroadcastChannel==='function' ? new BroadcastChannel('contas-ccs-data') : null;
 
 function notice(message,error=false) {
@@ -26,8 +27,12 @@ function notice(message,error=false) {
   }
 }
 function syncLabel(message) {
-  $('#sync-state').textContent=message || (drive.connected() && connectedAccount ? 'Drive conectado' :
-    account ? 'Reconecte ao Drive' : 'Dados neste aparelho');
+  const status=$('#sync-state');
+  if (!message && account && googleClientId && !drive.connected()) {
+    if (!status.querySelector('button')) status.innerHTML=click('Reconectar ao Drive','connect');
+    return;
+  }
+  status.textContent=message || (drive.connected() && connectedAccount ? 'Drive conectado' : 'Dados neste aparelho');
 }
 async function reload() {
   batches=await read(db,'batches');
@@ -58,11 +63,7 @@ const table=(headers,rows)=>'<table class="table"><thead><tr>'+headers.map(([lab
   '<th scope="col" class="'+css+'">'+text(label)+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 const empty=message=>'<p class="empty">'+text(message)+'</p>';
 const fixedKey=(item,recurring=item.recurring)=>'fixed:'+item.series+':'+item.month+(recurring?':rec':'');
-const entryRows = (data, kind) => [...heads.entries()].filter(([,list])=>{
-  const value=list[0].value;
-  return value?.type==='entry' && value.month===month.value && value.card===data.id && (!kind || value.kind===kind);
-}).sort((a,b)=>(a[1][0].value.date || '').localeCompare(b[1][0].value.date || '') ||
-  a[1][0].value.name.localeCompare(b[1][0].value.name,'pt-BR'));
+const entryRows = card => cardEntries(heads,month.value).filter(([,item])=>item.card===card.id);
 
 function render() {
   const data=project(heads,month.value);
@@ -80,7 +81,8 @@ function monthly(data) {
   const input=incomes.map(([id,label,value])=>'<label class="income">'+label+
     '<input inputmode="decimal" autocomplete="off" data-income="'+id+'" placeholder="R$ 0,00" value="'+
     (value===undefined?'':inputMoney(value))+'"></label>').join('');
-  const row=(item,index)=>'<tr><td>'+text(item.name)+'</td><td>'+item.day+
+  const row=(item,index)=>'<tr><td>'+text(item.name)+
+    (item.part?' <small>('+item.part+' de '+item.count+')</small>':'')+'</td><td>'+item.day+
     '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+click('Editar','fixed:'+index)+'</td></tr>';
   const rows=[],groups=new Map();
   data.fixed.forEach((item,index)=>{
@@ -95,8 +97,8 @@ function monthly(data) {
     rows.push('<tr class="fixed-group"><th colspan="4" scope="rowgroup">'+text(group.name)+
       ' · dia '+group.day+' · '+cash(group.amount)+'</th></tr>',...group.rows);
   }
-  const fixed=section('Gastos fixos',rows.length?table([['Conta'],['Dia'],['Valor','amount'],['']],rows):
-    empty('Adicione sua primeira despesa fixa.'),click('+ Despesa fixa','fixed:new'));
+  const fixed=section('Contas e despesas',rows.length?table([['Conta'],['Dia'],['Valor','amount'],['']],rows):
+    empty('Adicione sua primeira despesa.'),click('+ Despesa','fixed:new'));
   const billed=data.cards.map(card=>({...card,amount:sum(data.entries.filter(item=>item.card===card.id))}))
     .filter(card=>!card.archived || card.amount!==0);
   const subtotal=day=>sum(data.fixed.filter(item=>item.day===day))+sum(billed.filter(card=>card.day===day));
@@ -113,19 +115,20 @@ function monthly(data) {
 }
 function statement(card) {
   const entries=entryRows(card);
-  const parts=Object.entries(kinds).filter(([kind])=>kind!=='review' || entries.some(([,list])=>list[0].value.kind===kind));
+  const parts=Object.entries(kinds).filter(([kind])=>kind!=='review' || entries.some(([,item])=>item.kind===kind));
   const panels=parts.map(([kind,label])=>{
-    const group=entries.filter(([,list])=>list[0].value.kind===kind);
-    const rows=group.map(([key,[{value:item}]])=>'<tr><td>'+text(item.name)+
+    const group=entries.filter(([,item])=>item.kind===kind);
+    const rows=group.map(([key,item])=>'<tr><td>'+text(item.name)+
       (item.kind==='installment'?' <small>('+item.part+' de '+item.count+')</small>':'')+
+      (item.recurring?' <small>· mensal</small>':'')+
       '</td><td class="minor">'+text(item.date ? item.date.split('-').reverse().join('/') : '—')+'</td><td class="amount">'+
       cash(item.amount)+'</td><td class="action-cell">'+click('Editar','entry:'+key)+'</td></tr>');
-    return section(label+' · '+cash(sum(group.map(([,list])=>list[0].value))),
+    return section(label+' · '+cash(sum(group.map(([,item])=>item))),
       rows.length?table([['Descrição'],['Data','minor'],['Valor','amount'],['']],rows):empty('Nenhum lançamento neste mês.'));
   }).join('');
   return '<div class="card-top"><h1>'+text(card.name)+(card.archived?' <small>· arquivado</small>':'')+'</h1>'+
     (card.archived?'':click('+ Lançamento','entry:new','primary'))+'</div>'+
-    line('Total da fatura',sum(entries.map(([,list])=>list[0].value)),true)+'<div class="card-groups">'+panels+'</div>';
+    line('Total da fatura',sum(entries.map(([,item])=>item)),true)+'<div class="card-groups">'+panels+'</div>';
 }
 function show(title,html) {
   $('#dialog-title').textContent=title;
@@ -160,16 +163,35 @@ function form(title,fields,save,remove,removeLabel='Retirar') {
 }
 const days=[[5,'Pagamento · dia 5'],[20,'Vale · dia 20']];
 const scopes=[['single','Só neste mês'],['future','Neste mês e nos próximos']];
+const installmentFields=(part=1,count=2,editing=false)=>'<fieldset data-installments>'+
+  field('Parcela atual','part',part,'type="number" required min="1" max="600"')+
+  field('Total de parcelas','count',count,'type="number" required min="2" max="600"')+
+  (editing?'':select('Valor informado','amountBasis',[['parcel','Valor de uma parcela'],['total','Valor total da compra']],'parcel'))+
+  '<small>'+(editing?'Alterações nesta tela valem para a parcela selecionada.':
+    'O app lança da parcela atual até a última.')+'</small></fieldset>';
+function toggleFields(node,selector,visible) {
+  const fields=node.querySelector(selector);
+  if (fields) fields.hidden=fields.disabled=!visible;
+}
 function fixedEditor(item) {
   const selectedMonth=month.value;
   const series=item?.series || newId();
   const save=(data,removed=false)=>{
-    const recurring=data.get('scope')==='future';
+    const kind=data.get('kind');
+    const recurring=!item ? kind==='subscription' : !item.part && data.get('scope')==='future';
     const name=removed ? item.name : String(data.get('name')).trim();
     if (!name) throw new Error('Informe o nome da conta.');
     const group=removed ? (item.group || '') : String(data.get('group')).trim();
     const value={type:'fixed',name,series,group,month:selectedMonth,day:Number(data.get('day')),
-      amount:removed?0:cents(data.get('amount')),recurring,removed};
+      amount:removed?0:cents(data.get('amount')),recurring,removed,
+      ...(item?.part ? {part:item.part,count:item.count} : {})};
+    if (!item && kind==='installment') {
+      const schedule=installments(value.amount,Number(data.get('part')),Number(data.get('count')),selectedMonth,data.get('amountBasis')==='total');
+      return commit(new Map(schedule.map(slice=>{
+        const expense={...value,...slice};
+        return [fixedKey(expense),expense];
+      })));
+    }
     const changes=new Map([[fixedKey(value),value]]);
     if (recurring) {
       for (const [key,list] of heads) {
@@ -181,14 +203,23 @@ function fixedEditor(item) {
     }
     return commit(changes);
   };
-  form(item?'Editar despesa fixa':'Adicionar despesa fixa',
+  const node=form(item?'Editar despesa':'Adicionar despesa',
     field('Conta','name',item?.name,'required maxlength="250"')+
+    (!item ? select('Tipo','kind',[['subscription','Despesa mensal'],['purchase','Despesa única'],['installment','Parcelamento']],'subscription') : '')+
     field('Valor (R$)','amount',item?inputMoney(item.amount):'','required inputmode="decimal"')+
+    (!item ? installmentFields() : '')+
     field('Grupo de despesas (opcional)','group',item?.group,'maxlength="100" list="fixed-groups"')+
     '<datalist id="fixed-groups">'+[...new Set(project(heads,selectedMonth).fixed.map(item=>item.group).filter(Boolean))]
       .map(group=>'<option value="'+text(group)+'"></option>').join('')+'</datalist>'+
-    select('Separar do recebimento','day',days,item?.day || 5)+select('Aplicar','scope',scopes,item?'single':'future'),
+    select('Separar do recebimento','day',days,item?.day || 5)+
+    (item && !item.part ? select('Aplicar','scope',scopes,'single') :
+      item ? '<small>Alterações nesta tela valem para a parcela selecionada.</small>' : ''),
     data=>save(data),item?data=>save(data,true):null);
+  if (!item) {
+    const toggle=()=>toggleFields(node,'[data-installments]',node.elements.kind.value==='installment');
+    node.elements.kind.onchange=toggle;
+    toggle();
+  }
 }
 function cardList() {
   const {cards}=project(heads,month.value);
@@ -214,54 +245,64 @@ function entryEditor(key) {
   const item=heads.get(key)?.[0].value;
   const all=project(heads,month.value).cards;
   const available=all.filter(card=>!card.archived || card.id===item?.card);
-  const firstMonth=month.value;
+  const selectedMonth=month.value;
   const date=new Date();
   const today=currentMonth()+'-'+String(date.getDate()).padStart(2,'0');
-  const kindOptions=Object.entries(kinds).filter(([kind])=>kind!=='review' || item?.kind==='review');
+  const kindOptions=[['purchase','Compra à vista'],['subscription','Assinatura'],['installment','Parcelamento']];
+  if (item?.kind==='review') kindOptions.push(['review','Para revisar']);
+  const series=item?.series || newId();
+
+  function save(data,removed=false) {
+    const kind=item?.series ? 'subscription' : data.get('kind');
+    const target=String(data.get('month'));
+    const future=data.get('scope')==='future';
+    if (removed && !item.series) return commit(new Map([[key,null]]));
+    const value={type:'entry',name:removed?item.name:String(data.get('name')).trim(),month:target,
+      amount:removed?0:cents(data.get('amount')),kind,card:removed?item.card:String(data.get('card')),date:String(data.get('date'))};
+    if (!value.name || !validMonth(target) || !value.card) throw new Error('Preencha a descrição, a fatura e o cartão.');
+
+    if (kind==='subscription' && (future || item?.series)) {
+      const ruleKey='entry:sub:'+series+':'+target+(future?':rec':'');
+      const changes=new Map([[ruleKey,{...value,series,recurring:future,removed}]]);
+      if (item && !item.series) changes.set(key,null);
+      if (future) {
+        for (const [previous,[{value:record}]] of heads) {
+          if (record?.type==='entry' && record.series===series && record.month>=target && previous!==ruleKey) {
+            changes.set(previous,null);
+          }
+        }
+      }
+      return commit(changes);
+    }
+    if (kind==='installment') {
+      const schedule=installments(value.amount,Number(data.get('part')),Number(data.get('count')),target,data.get('amountBasis')==='total');
+      const slices=item ? schedule.slice(0,1) : schedule;
+      return commit(new Map(slices.map(slice=>[item?key:'entry:'+newId(),{...value,...slice}])));
+    }
+    return commit(new Map([[item?key:'entry:'+newId(),value]]));
+  }
+
   const node=form(item?'Editar lançamento':'Novo lançamento',
     select('Cartão','card',available.map(card=>[card.id,card.name]),item?.card || active)+
     field('Descrição','name',item?.name,'required maxlength="250"')+
     field('Data da compra','date',item?.date ?? today,'type="date"')+
-    field('Mês da fatura','month',item?.month || firstMonth,'type="month" required min="1900-01" max="9998-12"')+
-    select('Tipo','kind',kindOptions,item?.kind || 'purchase')+
-    field(item?'Valor desta cobrança (R$)':'Valor total (R$)','amount',item?inputMoney(item.amount):'','required inputmode="decimal"')+
-    '<fieldset id="parts">'+(item?field('Parcela atual','part',item.part || 1,'type="number" min="1" max="600"'):'')+
-    field('Quantidade de parcelas','count',item?.count || 2,'type="number" required min="2" max="600"')+'</fieldset>'+
-    (item?.kind==='installment'?'<small>Alterações neste formulário afetam só a cobrança desta fatura.</small>':''),
-    data=>{
-      const name=String(data.get('name')).trim();
-      const target=String(data.get('month'));
-      const kind=String(data.get('kind'));
-      const card=String(data.get('card'));
-      const amount=cents(data.get('amount'));
-      const count=Number(data.get('count'));
-      const part=Number(data.get('part'));
-      if (!name || !validMonth(target) || !card) throw new Error('Preencha a descrição, a fatura e o cartão.');
-      if (kind==='installment' && (!Number.isInteger(count) || count<2 || count>600 || (!item && !validMonth(shiftMonth(target,count-1))))) {
-        throw new Error('Informe uma quantidade de parcelas válida para o período.');
-      }
-      const value={type:'entry',name,month:target,amount,kind,card,date:String(data.get('date'))};
-      const changes=new Map();
-      if (kind==='installment' && !item) {
-        for (const slice of distribute(amount,count,target)) changes.set('entry:'+newId(),{...value,...slice});
-      } else {
-        if (kind==='installment') {
-          if (part>count) throw new Error('A parcela atual deve caber no total de parcelas.');
-          Object.assign(value,{part,count});
-        }
-        changes.set(item?key:'entry:'+newId(),value);
-      }
-      return commit(changes);
-    },item?()=>commit(new Map([[key,null]])):null);
+    field('Mês da fatura','month',item?.series ? selectedMonth : item?.month || selectedMonth,
+      'type="month" required min="1900-01" max="9998-12"'+(item?.series?' readonly':''))+
+    (item?.series ? '<small>Assinatura mensal</small>' : select('Tipo','kind',kindOptions,item?.kind || 'purchase'))+
+    field('Valor (R$)','amount',item?inputMoney(item.amount):'','required inputmode="decimal"')+
+    installmentFields(item?.part,item?.count,Boolean(item))+
+    '<fieldset data-subscription>'+select('Aplicar', 'scope',scopes,item?'single':'future')+
+    '<small>Uma assinatura mensal aparece automaticamente nas próximas faturas.</small></fieldset>',
+    data=>save(data),item?data=>save(data,true):null);
   const toggle=()=>{
-    const installment=node.elements.kind.value==='installment';
-    const parts=node.querySelector('#parts');
-    parts.hidden=!installment;
-    parts.disabled=!installment;
+    const kind=item?.series ? 'subscription' : node.elements.kind.value;
+    toggleFields(node,'[data-installments]',kind==='installment');
+    toggleFields(node,'[data-subscription]',kind==='subscription');
   };
-  node.elements.kind.onchange=toggle;
+  if (node.elements.kind) node.elements.kind.onchange=toggle;
   toggle();
 }
+
 function extras() {
   const selectedMonth=month.value;
   const data=project(heads,selectedMonth);
@@ -284,11 +325,13 @@ function settings() {
   if (googleClientId) void drive.prepareGoogle().catch(error=>notice(error.message,true));
 }
 async function connect() {
+  if (authorizing) return;
   if (connectedAccount && drive.connected()) return sync();
   if (syncing) throw new Error('Aguarde a sincronização atual antes de conectar.');
   connectedAccount=undefined;
-  const profile=await drive.authorize(googleClientId);
+  authorizing=true;
   try {
+    const profile=await drive.authorize(googleClientId,account?.email);
     const saved=await read(db,'settings','account');
     if (saved && saved.sub!==profile.sub) throw new Error('Este perfil local está vinculado a outra conta Google. Use outro perfil do navegador.');
     if (!saved && batches.length && !confirm('Vincular os dados salvos neste aparelho à conta '+profile.email+'?')) {
@@ -297,12 +340,14 @@ async function connect() {
     }
     account=await bindAccount(db,{sub:profile.sub,email:profile.email});
     connectedAccount=account.sub;
-    settings();
+    if (dialog.open) settings();
     await sync();
   } catch (error) {
     connectedAccount=undefined;
     drive.disconnect();
     throw error;
+  } finally {
+    authorizing=false;
   }
 }
 function sync(force=false) {
@@ -485,6 +530,7 @@ setInterval(()=>{if (!document.hidden) void sync();},45000);
 try {
   db=await openDatabase();
   await reload();
+  if (googleClientId && account) void drive.prepareGoogle().catch(()=>{});
   render();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
 } catch (error) {
