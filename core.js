@@ -131,6 +131,7 @@ export function bindAccount(db, profile) {
 const TYPES = new Set(['card','fixed','entry','income','import']);
 export function validateBatch(batch) {
   const str = (value,max=300) => typeof value === 'string' && value.length>0 && value.length<=max;
+  const optionalStyle = value => value===undefined || str(value,20);
   const amount = value => Number.isSafeInteger(value) && Math.abs(value)<=1e12;
   const installment=value=>Number.isInteger(value.part) && Number.isInteger(value.count) &&
     value.part>=1 && value.count>=value.part && value.count<=600;
@@ -143,13 +144,14 @@ export function validateBatch(batch) {
     if (!v || !TYPES.has(v.type) || !op.key.startsWith(v.type+':')) return false;
     if (v.type==='import') return str(v.name);
     if (v.type==='income') return amount(v.amount);
-    if (v.type==='card') return str(v.id,100) && str(v.name) && [5,20].includes(v.day) && typeof v.archived==='boolean';
+    if (v.type==='card') return str(v.id,100) && str(v.name) && [5,20].includes(v.day) &&
+      typeof v.archived==='boolean' && optionalStyle(v.color);
     if (!str(v.name) || !amount(v.amount) || !validMonth(v.month)) return false;
     if (v.type==='fixed') return str(v.series,100) && [5,20].includes(v.day) &&
       typeof v.recurring==='boolean' && typeof v.removed==='boolean' &&
       (v.part===undefined ? v.count===undefined : installment(v) && !v.recurring) &&
-      (v.group===undefined || typeof v.group==='string' && v.group.length<=100);
-    return str(v.card,100) && Object.hasOwn(kinds,v.kind) &&
+      (v.group===undefined || typeof v.group==='string' && v.group.length<=100) && optionalStyle(v.icon);
+    return str(v.card,100) && Object.hasOwn(kinds,v.kind) && optionalStyle(v.icon) &&
       (v.date === '' || (typeof v.date==='string' && /^\d{4}-\d{2}-\d{2}$/.test(v.date))) &&
       (v.kind!=='installment' || installment(v)) &&
       (v.series===undefined || (v.kind==='subscription' && str(v.series,100) &&

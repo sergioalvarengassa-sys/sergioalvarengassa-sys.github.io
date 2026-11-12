@@ -13,6 +13,57 @@ month.value=currentMonth();
 let db, batches=[], heads=new Map(), account, active='monthly', syncing, connectedAccount, reviewCount=0;
 let authorizing=false;
 const channel=typeof BroadcastChannel==='function' ? new BroadcastChannel('contas-ccs-data') : null;
+const incomePreference='contas-ccs-income-open';
+let incomeOpen=!matchMedia('(max-width: 720px)').matches;
+try {
+  const saved=localStorage.getItem(incomePreference);
+  if (saved!==null) incomeOpen=saved==='true';
+} catch {}
+
+const iconPaths={
+  wallet:'<path d="M20 8V6a2 2 0 0 0-2-2H5a2 2 0 0 0-2 2v12a2 2 0 0 0 2 2h13a2 2 0 0 0 2-2v-2"/><path d="M3 8h16a2 2 0 0 1 2 2v6h-6a3 3 0 0 1 0-6h6"/><path d="M15 13h.01"/>',
+  card:'<rect x="2" y="5" width="20" height="14" rx="3"/><path d="M2 10h20m-15 5h4"/>',
+  receipt:'<path d="M5 3l2 1.5L9.5 3 12 4.5 14.5 3 17 4.5 19 3v18l-2-1.5-2.5 1.5-2.5-1.5L9.5 21 7 19.5 5 21zM9 9h6m-6 4h6"/>',
+  home:'<path d="m3 10 9-7 9 7v10H3zM9 20v-6h6v6"/>',
+  wifi:'<path d="M2 8a16 16 0 0 1 20 0M5 12a11 11 0 0 1 14 0m-11 4a6 6 0 0 1 8 0m-4 4h.01"/>',
+  bolt:'<path d="m13 2-9 12h7l-1 8 10-12h-7z"/>',
+  water:'<path d="M12 2c2 4 7 8 7 13a7 7 0 0 1-14 0c0-5 5-9 7-13z"/>',
+  phone:'<rect x="6" y="2" width="12" height="20" rx="3"/><path d="M11 18h2"/>',
+  bag:'<path d="M5 7h14l2 14H3L5 7zM9 9V6a3 3 0 0 1 6 0v3"/>',
+  health:'<path d="M12 21S3 15.5 3 9a4.5 4.5 0 0 1 9-1 4.5 4.5 0 0 1 9 1c0 6.5-9 12-9 12z"/>',
+  calendar:'<rect x="3" y="5" width="18" height="16" rx="2"/><path d="M7 3v4m10-4v4M3 10h18"/>',
+  settings:'<path d="M4 7h16M4 12h16M4 17h16"/><circle cx="8" cy="7" r="2" fill="var(--surface)"/><circle cx="16" cy="12" r="2" fill="var(--surface)"/><circle cx="10" cy="17" r="2" fill="var(--surface)"/>',
+  edit:'<path d="m15 5 4 4M4 20l4-1 12-12a2.8 2.8 0 0 0-4-4L4 15z"/>',
+  chevron:'<path d="m9 5 7 7-7 7"/>'
+};
+const icon=(name)=>'<svg class="ui-icon" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="1.7" stroke-linecap="round" stroke-linejoin="round" aria-hidden="true" focusable="false">'+iconPaths[name]+'</svg>';
+const expenseIcons=[['auto','Automático'],['receipt','Recibo'],['home','Moradia'],['wifi','Internet'],
+  ['bolt','Energia'],['water','Água'],['phone','Telefone'],['bag','Compras'],['health','Saúde'],['calendar','Mensalidade']];
+const cardColors=[['auto','Automática'],['purple','Roxo'],['blue','Azul'],['indigo','Índigo'],['green','Verde'],['slate','Cinza-azulado']];
+const choice=(options,value)=>options.some(([id])=>id===value) ? value : 'auto';
+const normalize=value=>value.normalize('NFD').replace(/\p{Diacritic}/gu,'').toLowerCase();
+function expenseIcon(item) {
+  const selected=choice(expenseIcons,item.icon);
+  if (selected!=='auto') return selected;
+  const name=normalize(item.name);
+  for (const [pattern,symbol] of [[/internet|wi-fi|wifi/,'wifi'],[/energia|luz/,'bolt'],[/\bagua\b/,'water'],
+    [/condominio|aluguel|moradia/,'home'],[/\bcel\b|celular|telefone/,'phone'],[/mercado|compras/,'bag'],
+    [/saude|farmacia|dentista/,'health'],[/assinatura|mensalidade/,'calendar']]) {
+    if (pattern.test(name)) return symbol;
+  }
+  return 'receipt';
+}
+function cardColor(card) {
+  const selected=choice(cardColors,card.color);
+  if (selected!=='auto') return selected;
+  const name=normalize(card.id+' '+card.name);
+  return name.includes('nubank')?'purple':/mercado[ -]pago/.test(name)?'blue':'indigo';
+}
+const editButton=(item,action)=>'<button type="button" class="edit-icon" data-action="'+text(action)+
+  '" aria-label="Editar '+text(item.name)+'" title="Editar">'+icon('edit')+'</button>';
+const itemLabel=item=>'<div class="item-label"><span class="expense-icon">'+icon(expenseIcon(item))+'</span>'+
+  '<span>'+text(item.name)+(item.part?' <small>('+item.part+' de '+item.count+')</small>':'')+
+  (item.type==='entry' && item.recurring?' <small>· mensal</small>':'')+'</span></div>';
 
 function notice(message,error=false) {
   const element=$('#alert');
@@ -59,20 +110,29 @@ function click(label,action,css='') {
 const line=(label,value,total=false)=>'<div class="summary-line '+(total?'total ':'')+
   (value<0?'negative':'')+'"><span>'+text(label)+'</span><strong>'+cash(value)+'</strong></div>';
 const section=(title,body,action='')=>'<section class="panel"><div class="section-head"><h2>'+text(title)+'</h2>'+action+'</div>'+body+'</section>';
-const table=(headers,rows)=>'<table class="table"><thead><tr>'+headers.map(([label,css=''])=>
+const table=(headers,rows)=>'<table class="table expense-table"><thead><tr>'+headers.map(([label,css=''])=>
   '<th scope="col" class="'+css+'">'+text(label)+'</th>').join('')+'</tr></thead><tbody>'+rows.join('')+'</tbody></table>';
 const empty=message=>'<p class="empty">'+text(message)+'</p>';
 const fixedKey=(item,recurring=item.recurring)=>'fixed:'+item.series+':'+item.month+(recurring?':rec':'');
 const entryRows = card => cardEntries(heads,month.value).filter(([,item])=>item.card===card.id);
+const metric=(label,value,symbol)=>'<div class="overview-tile metric-tile'+(value<0?' negative':'')+'">'+
+  '<span class="tile-caption">'+icon(symbol)+text(label)+'</span><strong>'+cash(value)+'</strong></div>';
+const billTile=card=>'<button type="button" class="overview-tile bill-tile tone-'+cardColor(card)+
+  '" aria-label="Abrir fatura de '+text(card.name)+'" data-action="tab:'+text(card.id)+'">'+
+  '<span class="tile-caption">'+icon('card')+'<span>'+text(card.name)+'</span></span>'+
+  '<span class="tile-total"><strong>'+cash(card.amount)+'</strong>'+icon('chevron')+'</span></button>';
 
 function render() {
   const data=project(heads,month.value);
   const navCards=data.cards.filter(card=>!card.archived || data.entries.some(item=>item.card===card.id) || active===card.id);
   if (active!=='monthly' && !data.cards.some(card=>card.id===active)) active='monthly';
-  $('#tabs').innerHTML=[['monthly','Mensal'],...navCards.map(card=>[card.id,card.name])]
-    .map(([id,name])=>'<button type="button" data-action="tab:'+text(id)+'" aria-current="'+(active===id)+'">'+text(name)+'</button>')
-    .join('')+click('Cartões','cards');
+  $('#tabs').innerHTML=[['monthly','Mensal','calendar'],...navCards.map(card=>[card.id,card.name,'card'])]
+    .map(([id,name,symbol])=>'<button type="button" data-action="tab:'+text(id)+'" aria-current="'+(active===id)+'">'+icon(symbol)+text(name)+'</button>')
+    .join('')+'<button type="button" data-action="cards">'+icon('wallet')+'Cartões</button>';
   if (reviewCount) $('#tabs').insertAdjacentHTML('beforeend',click('Conflitos ('+reviewCount+')','conflicts'));
+  $('#mobile-conflicts').hidden=!reviewCount;
+  $('#mobile-monthly').setAttribute('aria-current',String(active==='monthly'));
+  $('#mobile-cards').setAttribute('aria-current',String(active!=='monthly'));
   view.innerHTML=active==='monthly' ? monthly(data) : statement(data.cards.find(card=>card.id===active));
   syncLabel();
 }
@@ -81,9 +141,8 @@ function monthly(data) {
   const input=incomes.map(([id,label,value])=>'<label class="income">'+label+
     '<input inputmode="decimal" autocomplete="off" data-income="'+id+'" placeholder="R$ 0,00" value="'+
     (value===undefined?'':inputMoney(value))+'"></label>').join('');
-  const row=(item,index)=>'<tr><td>'+text(item.name)+
-    (item.part?' <small>('+item.part+' de '+item.count+')</small>':'')+'</td><td>'+item.day+
-    '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+click('Editar','fixed:'+index)+'</td></tr>';
+  const row=(item,index)=>'<tr><td>'+itemLabel(item)+'</td><td class="expense-day">'+item.day+
+    '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+editButton(item,'fixed:'+index)+'</td></tr>';
   const rows=[],groups=new Map();
   data.fixed.forEach((item,index)=>{
     if (!item.group) {rows.push(row(item,index));return;}
@@ -98,31 +157,35 @@ function monthly(data) {
       ' · dia '+group.day+' · '+cash(group.amount)+'</th></tr>',...group.rows);
   }
   const fixed=section('Contas e despesas',rows.length?table([['Conta'],['Dia'],['Valor','amount'],['']],rows):
-    empty('Adicione sua primeira despesa.'),click('+ Despesa','fixed:new'));
+    empty('Adicione sua primeira despesa.'),click('+ Despesa','fixed:new','primary'));
   const billed=data.cards.map(card=>({...card,amount:sum(data.entries.filter(item=>item.card===card.id))}))
     .filter(card=>!card.archived || card.amount!==0);
   const subtotal=day=>sum(data.fixed.filter(item=>item.day===day))+sum(billed.filter(card=>card.day===day));
   const paid=(data.payment ?? 0)+(data.extra5 ?? 0);
   const advance=(data.advance ?? 0)+(data.extra20 ?? 0);
   const five=subtotal(5),twenty=subtotal(20);
-  const cardLines=billed.map(card=>line(card.name,card.amount)).join('');
+  const total=five+twenty;
+  const overview='<section class="overview" aria-label="Visão geral do mês">'+
+    '<div class="overview-grid">'+metric('Saldo do mês',paid+advance-total,'wallet')+
+    metric('Total de despesas',total,'receipt')+'</div>'+
+    (billed.length?'<div class="overview-grid" aria-label="Faturas do mês">'+billed.map(billTile).join('')+'</div>':'')+'</section>';
+  const income='<details class="income-panel"'+(incomeOpen?' open':'')+'><summary>Pagamento e Vale'+
+    '<span class="income-control"><span class="show-income">Mostrar</span><span class="hide-income">Ocultar</span>'+
+    icon('chevron')+'</span></summary><div class="incomes">'+input+'</div></details>';
   const summary=section('Resumo do mês','<div class="content">'+line('Entradas · dia 5',paid)+line('Despesas · dia 5',five)+
     line('Saldo · dia 5',paid-five,true)+line('Entradas · dia 20',advance)+line('Despesas · dia 20',twenty)+
-    line('Saldo · dia 20',advance-twenty,true)+line('Saldo do mês',paid+advance-five-twenty,true)+
-    (cardLines?'<div class="card-summary"><h3>Faturas incluídas nas despesas</h3>'+cardLines+'</div>':'')+'</div>',
+    line('Saldo · dia 20',advance-twenty,true)+'</div>',
     click('Editar extras','extras'));
-  return '<div class="incomes">'+input+'</div><div class="monthly">'+fixed+summary+'</div>';
+  return overview+income+'<div class="monthly">'+fixed+summary+'</div>';
 }
 function statement(card) {
   const entries=entryRows(card);
   const parts=Object.entries(kinds).filter(([kind])=>kind!=='review' || entries.some(([,item])=>item.kind===kind));
   const panels=parts.map(([kind,label])=>{
     const group=entries.filter(([,item])=>item.kind===kind);
-    const rows=group.map(([key,item])=>'<tr><td>'+text(item.name)+
-      (item.kind==='installment'?' <small>('+item.part+' de '+item.count+')</small>':'')+
-      (item.recurring?' <small>· mensal</small>':'')+
+    const rows=group.map(([key,item])=>'<tr><td>'+itemLabel(item)+
       '</td><td class="minor">'+text(item.date ? item.date.split('-').reverse().join('/') : '—')+'</td><td class="amount">'+
-      cash(item.amount)+'</td><td class="action-cell">'+click('Editar','entry:'+key)+'</td></tr>');
+      cash(item.amount)+'</td><td class="action-cell">'+editButton(item,'entry:'+key)+'</td></tr>');
     return section(label+' · '+cash(sum(group.map(([,item])=>item))),
       rows.length?table([['Descrição'],['Data','minor'],['Valor','amount'],['']],rows):empty('Nenhum lançamento neste mês.'));
   }).join('');
@@ -184,7 +247,8 @@ function fixedEditor(item) {
     if (!name) throw new Error('Informe o nome da conta.');
     const group=removed ? (item.group || '') : String(data.get('group')).trim();
     const value={type:'fixed',name,series,group,month:selectedMonth,day:Number(data.get('day')),
-      amount:removed?0:cents(data.get('amount')),recurring,removed};
+      amount:removed?0:cents(data.get('amount')),recurring,removed,
+      icon:choice(expenseIcons,removed?item.icon:data.get('icon'))};
     if (!removed && kind==='installment') {
       const schedule=installments(value.amount,Number(data.get('part')),Number(data.get('count')),selectedMonth,data.get('amountBasis')==='total');
       const changes=new Map((item?.part ? schedule.slice(0,1) : schedule).map(slice=>{
@@ -224,6 +288,7 @@ function fixedEditor(item) {
     field('Grupo de despesas (opcional)','group',item?.group,'maxlength="100" list="fixed-groups"')+
     '<datalist id="fixed-groups">'+[...new Set(project(heads,selectedMonth).fixed.map(item=>item.group).filter(Boolean))]
       .map(group=>'<option value="'+text(group)+'"></option>').join('')+'</datalist>'+
+    select('Ícone da despesa','icon',expenseIcons,choice(expenseIcons,item?.icon))+
     select('Separar do recebimento','day',days,item?.day || 5)+
     (item && !item.part ? '<fieldset data-fixed-scope>'+select('Aplicar','scope',scopes,'single')+'</fieldset>' : ''),
     data=>save(data),item?data=>save(data,true):null);
@@ -238,7 +303,8 @@ function fixedEditor(item) {
 function cardList() {
   const {cards}=project(heads,month.value);
   show('Gerenciar cartões','<div class="setting-group">'+cards.map(card=>'<div class="summary-line"><span>'+
-    text(card.name)+(card.archived?' · Arquivado':'')+'</span>'+click('Editar','card:'+card.id)+'</div>').join('')+
+    text(card.name)+(card.archived?' · Arquivado':'')+'</span><div class="row-actions">'+
+    click('Ver fatura','tab:'+card.id)+click('Editar','card:'+card.id)+'</div></div>').join('')+
     (cards.length?'':empty('Cadastre um cartão para lançar despesas.'))+'</div><div class="dialog-actions">'+
     click('+ Cartão','card:new','primary')+'</div>');
 }
@@ -247,10 +313,12 @@ function cardEditor(card) {
   const change=(data,archived=false)=>{
     const name=String(data.get('name')).trim();
     if (!name) throw new Error('Informe o nome do cartão.');
-    return commit(new Map([[cardKey(id),{type:'card',id,name,archived,day:Number(data.get('day'))}]]));
+    return commit(new Map([[cardKey(id),{type:'card',id,name,archived,day:Number(data.get('day')),
+      color:choice(cardColors,data.get('color'))}]]));
   };
   form(card?'Editar cartão':'Adicionar cartão',
     field('Nome do cartão','name',card?.name,'required maxlength="250"')+
+    select('Cor do cartão','color',cardColors,choice(cardColors,card?.color))+
     select('Fatura paga com','day',days,card?.day || 20)+
     (card?'<small>Arquivar retira o cartão dos novos lançamentos e preserva as faturas e parcelas existentes. Salvar reativa um cartão arquivado.</small>':''),
     data=>change(data),card && !card.archived ? data=>change(data,true):null,'Arquivar');
@@ -272,7 +340,8 @@ function entryEditor(key) {
     const future=data.get('scope')==='future';
     if (removed && !item.series) return commit(new Map([[key,null]]));
     const value={type:'entry',name:removed?item.name:String(data.get('name')).trim(),month:target,
-      amount:removed?0:cents(data.get('amount')),kind,card:removed?item.card:String(data.get('card')),date:String(data.get('date'))};
+      amount:removed?0:cents(data.get('amount')),kind,card:removed?item.card:String(data.get('card')),date:String(data.get('date')),
+      icon:choice(expenseIcons,removed?item.icon:data.get('icon'))};
     if (!value.name || !validMonth(target) || !value.card) throw new Error('Preencha a descrição, a fatura e o cartão.');
 
     if (kind==='subscription' && (future || item?.series)) {
@@ -312,6 +381,7 @@ function entryEditor(key) {
   const node=form(item?'Editar lançamento':'Novo lançamento',
     select('Cartão','card',available.map(card=>[card.id,card.name]),item?.card || active)+
     field('Descrição','name',item?.name,'required maxlength="250"')+
+    select('Ícone da despesa','icon',expenseIcons,choice(expenseIcons,item?.icon))+
     field('Data da compra','date',item?.date ?? today,'type="date"')+
     field('Mês da fatura','month',item?.series ? selectedMonth : item?.month || selectedMonth,
       'type="month" required min="1900-01" max="9998-12"'+(item?.series?' readonly':''))+
@@ -482,7 +552,8 @@ async function action(event) {
   const [kind,...parts]=button.dataset.action.split(':');
   const arg=parts.join(':');
   const data=project(heads,month.value);
-  if (kind==='tab') {active=arg;render();}
+  if (kind==='tab') {if (dialog.open) dialog.close();active=arg;render();}
+  if (kind==='settings') settings();
   if (kind==='fixed') fixedEditor(data.fixed[Number(arg)]);
   if (kind==='entry') entryEditor(arg);
   if (kind==='cards') cardList();
@@ -524,11 +595,20 @@ function chooseMonth(value) {
   render();
 }
 document.addEventListener('click',event=>void action(event).catch(error=>notice(error.message,true)));
+for (const [id,symbol] of [['mobile-monthly','calendar'],['mobile-cards','wallet'],['mobile-settings','settings']]) {
+  document.getElementById(id).insertAdjacentHTML('afterbegin',icon(symbol));
+}
 $('#settings').onclick=()=>{if (db) settings();};
 $('#close-dialog').onclick=()=>dialog.close();
 $('#prev').onclick=()=>chooseMonth(shiftMonth(selectedMonth,-1));
 $('#next').onclick=()=>chooseMonth(shiftMonth(selectedMonth,1));
 month.onchange=()=>chooseMonth(month.value);
+view.addEventListener('toggle',event=>{
+  const panel=event.target;
+  if (!panel.classList.contains('income-panel') || !panel.isConnected) return;
+  incomeOpen=panel.open;
+  try {localStorage.setItem(incomePreference,String(incomeOpen));} catch {}
+},true);
 view.addEventListener('focusout',()=>setTimeout(()=>{
   if (refreshOnBlur && !view.contains(document.activeElement)) {
     refreshOnBlur=false;
