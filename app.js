@@ -243,12 +243,28 @@ function toggleFields(node,selector,visible) {
   const fields=node.querySelector(selector);
   if (fields) fields.hidden=fields.disabled=!visible;
 }
+function bindScheduleFields(node,scopeSelector,editing) {
+  const {kind,scope}=node.elements;
+  const update=()=>{
+    toggleFields(node,'[data-installments]',kind.value==='installment');
+    toggleFields(node,scopeSelector,kind.value!=='installment' && (editing || kind.value==='subscription'));
+  };
+  kind.onchange=()=>{
+    if (scope && kind.value!=='installment') scope.value=kind.value==='subscription'?'future':'single';
+    update();
+  };
+  if (scope) scope.onchange=()=>{
+    if (scope.value==='future') kind.value='subscription';
+    update();
+  };
+  update();
+}
 function fixedEditor(item) {
   const selectedMonth=month.value;
   const series=item?.series || newId();
   const save=data=>{
     const kind=data.get('kind');
-    const recurring=kind==='subscription' && (!item || data.get('scope')==='future');
+    const recurring=kind!=='installment' && (item ? data.get('scope')==='future' : kind==='subscription');
     const name=String(data.get('name')).trim();
     if (!name) throw new Error('Informe o nome da conta.');
     const group=String(data.get('group')).trim();
@@ -295,15 +311,9 @@ function fixedEditor(item) {
       .map(group=>'<option value="'+text(group)+'"></option>').join('')+'</datalist>'+
     select('Ícone da despesa','icon',expenseIcons,choice(expenseIcons,item?.icon))+
     select('Separar do recebimento','day',days,item?.day || 5)+
-    (item && !item.part ? '<fieldset data-fixed-scope>'+select('Aplicar','scope',scopes,'single')+'</fieldset>' : ''),
+    (item && !item.part ? '<fieldset data-fixed-scope>'+select('Aplicar','scope',scopes,item.recurring?'future':'single')+'</fieldset>' : ''),
     save);
-  const toggle=()=>{
-    const installment=node.elements.kind.value==='installment';
-    toggleFields(node,'[data-installments]',installment);
-    toggleFields(node,'[data-fixed-scope]',!installment);
-  };
-  node.elements.kind.onchange=toggle;
-  toggle();
+  bindScheduleFields(node,'[data-fixed-scope]',Boolean(item));
 }
 function cardList() {
   const {cards}=project(heads,month.value);
@@ -340,9 +350,10 @@ function entryEditor(key) {
   const series=item?.series || newId();
 
   function save(data) {
-    const kind=data.get('kind');
+    const selectedKind=data.get('kind');
     const target=String(data.get('month'));
-    const future=data.get('scope')==='future';
+    const future=selectedKind!=='installment' && data.get('scope')==='future';
+    const kind=future?'subscription':selectedKind;
     const value={type:'entry',name:String(data.get('name')).trim(),month:target,
       amount:cents(data.get('amount')),kind,card:String(data.get('card')),date:String(data.get('date')),
       icon:choice(expenseIcons,data.get('icon'))};
@@ -394,16 +405,10 @@ function entryEditor(key) {
     select('Tipo','kind',item?.series ? kindOptions.filter(([kind])=>kind!=='purchase') : kindOptions,item?.kind || 'purchase')+
     field('Valor (R$)','amount',item?inputMoney(item.amount):'','required inputmode="decimal"')+
     installmentFields(item?.part,item?.count,item?.kind==='installment')+
-    '<fieldset data-subscription>'+select('Aplicar', 'scope',scopes,item?'single':'future')+
+    '<fieldset data-subscription>'+select('Aplicar', 'scope',scopes,!item || item.recurring?'future':'single')+
     '<small>Uma assinatura mensal aparece automaticamente nas próximas faturas.</small></fieldset>',
     save);
-  const toggle=()=>{
-    const kind=node.elements.kind.value;
-    toggleFields(node,'[data-installments]',kind==='installment');
-    toggleFields(node,'[data-subscription]',kind==='subscription');
-  };
-  node.elements.kind.onchange=toggle;
-  toggle();
+  bindScheduleFields(node,'[data-subscription]',Boolean(item));
 }
 
 function matchingParcels(item,key,parcel,records) {
