@@ -166,8 +166,8 @@ function monthly(data) {
   const five=subtotal(5),twenty=subtotal(20);
   const total=five+twenty;
   const overview='<section class="overview" aria-label="Visão geral do mês">'+
-    '<div class="overview-grid">'+metric('Saldo do mês',paid+advance-total,'wallet')+
-    metric('Total de despesas',total,'receipt')+'</div>'+
+    '<div class="overview-grid overview-metrics">'+metric('Saldo do mês',paid+advance-total,'wallet')+
+    metric('Total de despesas',total,'receipt')+metric('Contas e despesas',sum(data.fixed),'receipt')+'</div>'+
     (billed.length?'<div class="overview-grid" aria-label="Faturas do mês">'+billed.map(billTile).join('')+'</div>':'')+'</section>';
   const income='<details class="income-panel"'+(incomeOpen?' open':'')+'><summary>Pagamento e Vale'+
     '<span class="income-control"><span class="show-income">Mostrar</span><span class="hide-income">Ocultar</span>'+

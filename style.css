@@ -65,6 +65,7 @@ input,select{border:1px solid #c9c2d1;border-radius:7px;background:var(--surface
 
 .overview{display:grid;gap:.48rem;margin-bottom:.6rem}
 .overview-grid{display:grid;grid-template-columns:repeat(2,minmax(0,1fr));gap:.5rem}
+.overview-metrics{grid-template-columns:repeat(3,minmax(0,1fr))}
 .overview-tile{
   display:grid;align-content:center;gap:.12rem;min-width:0;min-height:57px;
   padding:.46rem .72rem;border-radius:10px;text-align:left
@@ -172,6 +173,10 @@ fieldset label+label{margin-top:.4rem}
   .month-controls input{padding:.28rem .32rem;max-width:10.6rem;min-height:36px}
   .overview{gap:.34rem;margin-bottom:.48rem}
   .overview-grid{gap:.34rem}
+  .overview-metrics{grid-template-columns:repeat(2,minmax(0,1fr))}
+  .overview-metrics .metric-tile:last-child{
+    grid-column:1/-1;grid-template-columns:minmax(0,1fr) auto;align-items:center;min-height:34px
+  }
   .overview-tile{min-height:51px;padding:.31rem .5rem;border-radius:8px}
   .tile-caption{font-size:.8rem;gap:.25rem}
   .tile-caption .ui-icon,.tile-total .ui-icon{width:.9rem;height:.9rem}
