@@ -177,21 +177,32 @@ function fixedEditor(item) {
   const selectedMonth=month.value;
   const series=item?.series || newId();
   const save=(data,removed=false)=>{
-    const kind=data.get('kind');
-    const recurring=!item ? kind==='subscription' : !item.part && data.get('scope')==='future';
+    const kind=removed ? (item.part?'installment':item.recurring?'subscription':'purchase') : data.get('kind');
+    const recurring=removed ? !item.part && data.get('scope')==='future' :
+      kind==='subscription' && (!item || data.get('scope')==='future');
     const name=removed ? item.name : String(data.get('name')).trim();
     if (!name) throw new Error('Informe o nome da conta.');
     const group=removed ? (item.group || '') : String(data.get('group')).trim();
     const value={type:'fixed',name,series,group,month:selectedMonth,day:Number(data.get('day')),
-      amount:removed?0:cents(data.get('amount')),recurring,removed,
-      ...(item?.part ? {part:item.part,count:item.count} : {})};
-    if (!item && kind==='installment') {
+      amount:removed?0:cents(data.get('amount')),recurring,removed};
+    if (!removed && kind==='installment') {
       const schedule=installments(value.amount,Number(data.get('part')),Number(data.get('count')),selectedMonth,data.get('amountBasis')==='total');
-      return commit(new Map(schedule.map(slice=>{
+      const changes=new Map((item?.part ? schedule.slice(0,1) : schedule).map(slice=>{
         const expense={...value,...slice};
         return [fixedKey(expense),expense];
-      })));
+      }));
+      if (item && !item.part) {
+        for (const [key,[{value:previous}]] of heads) {
+          if (previous?.type==='fixed' && previous.series===series && previous.month>=selectedMonth && !changes.has(key)) {
+            changes.set(key,null);
+          }
+        }
+        const stop={...value,amount:0,recurring:true,removed:true};
+        changes.set(fixedKey(stop),stop);
+      }
+      return commit(changes);
     }
+    if (removed && item.part) Object.assign(value,{part:item.part,count:item.count});
     const changes=new Map([[fixedKey(value),value]]);
     if (recurring) {
       for (const [key,list] of heads) {
@@ -205,21 +216,24 @@ function fixedEditor(item) {
   };
   const node=form(item?'Editar despesa':'Adicionar despesa',
     field('Conta','name',item?.name,'required maxlength="250"')+
-    (!item ? select('Tipo','kind',[['subscription','Despesa mensal'],['purchase','Despesa única'],['installment','Parcelamento']],'subscription') : '')+
+    select('Tipo','kind',item?.part ? [['installment','Parcelamento']] :
+      [['subscription','Despesa mensal'],['purchase','Despesa única'],['installment','Parcelamento']],
+      item?.part?'installment':!item || item.recurring?'subscription':'purchase')+
     field('Valor (R$)','amount',item?inputMoney(item.amount):'','required inputmode="decimal"')+
-    (!item ? installmentFields() : '')+
+    installmentFields(item?.part,item?.count,Boolean(item?.part))+
     field('Grupo de despesas (opcional)','group',item?.group,'maxlength="100" list="fixed-groups"')+
     '<datalist id="fixed-groups">'+[...new Set(project(heads,selectedMonth).fixed.map(item=>item.group).filter(Boolean))]
       .map(group=>'<option value="'+text(group)+'"></option>').join('')+'</datalist>'+
     select('Separar do recebimento','day',days,item?.day || 5)+
-    (item && !item.part ? select('Aplicar','scope',scopes,'single') :
-      item ? '<small>Alterações nesta tela valem para a parcela selecionada.</small>' : ''),
+    (item && !item.part ? '<fieldset data-fixed-scope>'+select('Aplicar','scope',scopes,'single')+'</fieldset>' : ''),
     data=>save(data),item?data=>save(data,true):null);
-  if (!item) {
-    const toggle=()=>toggleFields(node,'[data-installments]',node.elements.kind.value==='installment');
-    node.elements.kind.onchange=toggle;
-    toggle();
-  }
+  const toggle=()=>{
+    const installment=node.elements.kind.value==='installment';
+    toggleFields(node,'[data-installments]',installment);
+    toggleFields(node,'[data-fixed-scope]',!installment);
+  };
+  node.elements.kind.onchange=toggle;
+  toggle();
 }
 function cardList() {
   const {cards}=project(heads,month.value);
@@ -253,7 +267,7 @@ function entryEditor(key) {
   const series=item?.series || newId();
 
   function save(data,removed=false) {
-    const kind=item?.series ? 'subscription' : data.get('kind');
+    const kind=removed ? item.kind : data.get('kind');
     const target=String(data.get('month'));
     const future=data.get('scope')==='future';
     if (removed && !item.series) return commit(new Map([[key,null]]));
@@ -276,8 +290,21 @@ function entryEditor(key) {
     }
     if (kind==='installment') {
       const schedule=installments(value.amount,Number(data.get('part')),Number(data.get('count')),target,data.get('amountBasis')==='total');
-      const slices=item ? schedule.slice(0,1) : schedule;
-      return commit(new Map(slices.map(slice=>[item?key:'entry:'+newId(),{...value,...slice}])));
+      const editingParcel=item?.kind==='installment';
+      const slices=editingParcel ? schedule.slice(0,1) : schedule;
+      const changes=new Map(slices.map((slice,index)=>[
+        item && !item.series && index===0 ? key : 'entry:'+newId(),{...value,...slice}
+      ]));
+      if (item?.series) {
+        const ruleKey='entry:sub:'+series+':'+target+':rec';
+        for (const [previous,[{value:record}]] of heads) {
+          if (record?.type==='entry' && record.series===series && record.month>=target && previous!==ruleKey) {
+            changes.set(previous,null);
+          }
+        }
+        changes.set(ruleKey,{...item,month:target,amount:0,recurring:true,removed:true});
+      }
+      return commit(changes);
     }
     return commit(new Map([[item?key:'entry:'+newId(),value]]));
   }
@@ -288,18 +315,18 @@ function entryEditor(key) {
     field('Data da compra','date',item?.date ?? today,'type="date"')+
     field('Mês da fatura','month',item?.series ? selectedMonth : item?.month || selectedMonth,
       'type="month" required min="1900-01" max="9998-12"'+(item?.series?' readonly':''))+
-    (item?.series ? '<small>Assinatura mensal</small>' : select('Tipo','kind',kindOptions,item?.kind || 'purchase'))+
+    select('Tipo','kind',item?.series ? kindOptions.filter(([kind])=>kind!=='purchase') : kindOptions,item?.kind || 'purchase')+
     field('Valor (R$)','amount',item?inputMoney(item.amount):'','required inputmode="decimal"')+
-    installmentFields(item?.part,item?.count,Boolean(item))+
+    installmentFields(item?.part,item?.count,item?.kind==='installment')+
     '<fieldset data-subscription>'+select('Aplicar', 'scope',scopes,item?'single':'future')+
     '<small>Uma assinatura mensal aparece automaticamente nas próximas faturas.</small></fieldset>',
     data=>save(data),item?data=>save(data,true):null);
   const toggle=()=>{
-    const kind=item?.series ? 'subscription' : node.elements.kind.value;
+    const kind=node.elements.kind.value;
     toggleFields(node,'[data-installments]',kind==='installment');
     toggleFields(node,'[data-subscription]',kind==='subscription');
   };
-  if (node.elements.kind) node.elements.kind.onchange=toggle;
+  node.elements.kind.onchange=toggle;
   toggle();
 }
 
