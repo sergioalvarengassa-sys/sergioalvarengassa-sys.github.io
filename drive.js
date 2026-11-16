@@ -19,6 +19,14 @@ export function prepareGoogle() {
 export function connected() {
   return Boolean(token && Date.now()<expires);
 }
+export function session() {
+  return connected() ? {token,expires} : null;
+}
+export function resumeSession(saved) {
+  if (typeof saved?.token!=='string' || !saved.token || !Number.isFinite(saved.expires) || saved.expires<=Date.now()) return false;
+  ({token,expires}=saved);
+  return true;
+}
 export function disconnect() {
   token = undefined;
   expires = 0;

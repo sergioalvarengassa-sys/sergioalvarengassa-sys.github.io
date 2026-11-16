@@ -12,6 +12,9 @@ const month = $('#month');
 month.value=currentMonth();
 let db, batches=[], heads=new Map(), account, active='monthly', syncing, connectedAccount, reviewCount=0;
 let authorizing=false;
+let syncTimer;
+const driveSessionKey='drive-session';
+const syncInterval=3*60*1000;
 const channel=typeof BroadcastChannel==='function' ? new BroadcastChannel('contas-ccs-data') : null;
 const incomePreference='contas-ccs-income-open';
 const paidColumnPreference='contas-ccs-paid-column';
@@ -549,6 +552,11 @@ async function connect() {
     }
     account=await bindAccount(db,{sub:profile.sub,email:profile.email});
     connectedAccount=account.sub;
+    const session=drive.session();
+    if (session) {
+      await write(db,'settings',[[{...session,sub:account.sub,clientId:googleClientId},driveSessionKey]]);
+    }
+    startSyncTimer();
     if (dialog.open) settings();
     await sync();
   } catch (error) {
@@ -559,10 +567,32 @@ async function connect() {
     authorizing=false;
   }
 }
+function startSyncTimer() {
+  clearInterval(syncTimer);
+  syncTimer=setInterval(()=>{
+    if (!document.hidden || !drive.connected()) void sync();
+  },syncInterval);
+}
+function stopDriveSession() {
+  clearInterval(syncTimer);
+  syncTimer=undefined;
+  connectedAccount=undefined;
+  drive.disconnect();
+}
+async function forgetDriveSession() {
+  stopDriveSession();
+  await write(db,'settings',[[null,driveSessionKey]]);
+  channel?.postMessage('drive-disconnected');
+}
 function sync(force=false) {
   if (syncing) return syncing;
-  if (!drive.connected() || !connectedAccount || !navigator.onLine) {
-    syncLabel(!navigator.onLine ? 'Offline · salvo neste aparelho' : undefined);
+  if (!db || !connectedAccount) return;
+  if (!drive.connected()) {
+    syncLabel();
+    return forgetDriveSession().catch(error=>notice(error.message,true));
+  }
+  if (!navigator.onLine) {
+    syncLabel('Offline · salvo neste aparelho');
     return;
   }
   syncing=(async()=>{
@@ -589,7 +619,10 @@ function sync(force=false) {
     else if (incoming.length) refreshOnBlur=true;
     syncLabel('Sincronizado às '+new Date().toLocaleTimeString('pt-BR',{hour:'2-digit',minute:'2-digit'}));
     if (force) notice('Sincronização concluída.');
-  })().catch(error=>{
+  })().catch(async error=>{
+    if (!drive.connected() && connectedAccount) {
+      await forgetDriveSession().catch(error=>notice(error.message,true));
+    }
     syncLabel(drive.connected()?'Sincronização pendente':undefined);
     if (force) notice(error.message,true);
   }).finally(()=>{syncing=undefined;});
@@ -689,8 +722,7 @@ async function action(event) {
     try {await connect();} finally {button.disabled=false;}
   }
   if (kind==='disconnect') {
-    drive.disconnect();
-    connectedAccount=undefined;
+    await forgetDriveSession();
     syncLabel();
     settings();
   }
@@ -766,19 +798,36 @@ view.addEventListener('change',event=>{
     notice(error.message,true);
   }
 });
-channel?.addEventListener('message',()=>void reload().then(()=>{
-  if (!view.contains(document.activeElement)) render();
-  else refreshOnBlur=true;
-}));
+channel?.addEventListener('message',event=>{
+  if (event.data==='drive-disconnected') {
+    stopDriveSession();
+    syncLabel();
+    return;
+  }
+  if (!db) return;
+  void reload().then(()=>{
+    if (!view.contains(document.activeElement)) render();
+    else refreshOnBlur=true;
+  });
+});
 addEventListener('online',()=>void sync());
 addEventListener('offline',()=>syncLabel('Offline · salvo neste aparelho'));
 document.addEventListener('visibilitychange',()=>{if (!document.hidden) void sync();});
-setInterval(()=>{if (!document.hidden) void sync();},45000);
 try {
   db=await openDatabase();
   await reload();
-  if (googleClientId && account) void drive.prepareGoogle().catch(()=>{});
+  if (googleClientId && account) {
+    const saved=await read(db,'settings',driveSessionKey);
+    if (saved?.sub===account.sub && saved.clientId===googleClientId && drive.resumeSession(saved)) {
+      connectedAccount=account.sub;
+      startSyncTimer();
+    } else {
+      if (saved) await write(db,'settings',[[null,driveSessionKey]]);
+      void drive.prepareGoogle().catch(()=>{});
+    }
+  }
   render();
+  if (connectedAccount) void sync();
   if ('serviceWorker' in navigator) navigator.serviceWorker.register('./sw.js').catch(console.error);
 } catch (error) {
   notice('Não foi possível abrir o banco local. '+error.message,true);
