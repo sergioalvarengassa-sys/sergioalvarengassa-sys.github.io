@@ -122,6 +122,11 @@ input,select{border:1px solid #c9c2d1;border-radius:7px;background:var(--surface
 .expense-icon .ui-icon{width:15px;height:15px}
 .edit-icon{display:inline-grid;place-items:center;min-width:34px;min-height:32px;padding:0;border-color:transparent;color:var(--accent)}
 .expense-actions{display:flex;justify-content:flex-end;gap:.1rem}
+.expense-controls{display:flex;flex-wrap:wrap;gap:.4rem}
+.table .paid-cell{padding-inline:0;width:1%;text-align:center}
+.paid-check{display:grid;place-items:center;width:40px;min-height:40px;cursor:pointer}
+.paid-check input{width:17px;height:17px;margin:0;accent-color:var(--accent);cursor:pointer}
+.paid-expense .item-label>span:last-child,.table .paid-expense .amount{text-decoration:line-through;color:var(--muted)}
 .delete-icon{color:var(--danger)}
 .delete-confirm{background:#a12741;border-color:#a12741;color:white}
 .delete-confirm:hover{background:#801e34}

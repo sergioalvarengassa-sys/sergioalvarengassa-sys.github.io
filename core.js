@@ -135,7 +135,7 @@ export function bindAccount(db, profile) {
     tx.onabort=()=>reject(mismatch ? new Error('Este perfil local já está vinculado a outra conta Google.') : tx.error);
   });
 }
-const TYPES = new Set(['card','fixed','entry','income','import']);
+const TYPES = new Set(['card','fixed','entry','income','import','paid']);
 export function validateBatch(batch) {
   const str = (value,max=300) => typeof value === 'string' && value.length>0 && value.length<=max;
   const optionalStyle = value => value===undefined || str(value,20);
@@ -151,6 +151,7 @@ export function validateBatch(batch) {
     if (!v || !TYPES.has(v.type) || !op.key.startsWith(v.type+':')) return false;
     if (v.type==='import') return str(v.name);
     if (v.type==='income') return amount(v.amount);
+    if (v.type==='paid') return typeof v.paid==='boolean' && /^paid:\d{4}-(0[1-9]|1[0-2]):.{1,100}$/.test(op.key);
     if (v.type==='card') return str(v.id,100) && str(v.name) && [5,20].includes(v.day) &&
       typeof v.archived==='boolean' && optionalStyle(v.color);
     if (!str(v.name) || !amount(v.amount) || !validMonth(v.month)) return false;

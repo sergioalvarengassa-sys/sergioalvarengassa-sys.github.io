@@ -14,10 +14,13 @@ let db, batches=[], heads=new Map(), account, active='monthly', syncing, connect
 let authorizing=false;
 const channel=typeof BroadcastChannel==='function' ? new BroadcastChannel('contas-ccs-data') : null;
 const incomePreference='contas-ccs-income-open';
+const paidColumnPreference='contas-ccs-paid-column';
 let incomeOpen=!matchMedia('(max-width: 720px)').matches;
+let paidColumnVisible=true;
 try {
   const saved=localStorage.getItem(incomePreference);
   if (saved!==null) incomeOpen=saved==='true';
+  paidColumnVisible=localStorage.getItem(paidColumnPreference)!=='false';
 } catch {}
 
 const iconPaths={
@@ -145,8 +148,14 @@ function monthly(data) {
   const input=incomes.map(([id,label,value])=>'<label class="income">'+label+
     '<input inputmode="decimal" autocomplete="off" data-income="'+id+'" placeholder="R$ 0,00" value="'+
     (value===undefined?'':inputMoney(value))+'"></label>').join('');
-  const row=(item,index)=>'<tr><td>'+itemLabel(item)+'</td><td class="expense-day">'+item.day+
-    '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+expenseActions(item,'fixed:'+index)+'</td></tr>';
+  const row=(item,index)=>{
+    const paidKey='paid:'+month.value+':'+item.series;
+    const paid=heads.get(paidKey)?.[0].value?.paid===true;
+    const checkbox=paidColumnVisible ? '<td class="paid-cell"><label class="paid-check"><input type="checkbox" data-paid-key="'+
+      text(paidKey)+'" aria-label="'+text('Marcar '+item.name+' como paga')+'"'+(paid?' checked':'')+'></label></td>' : '';
+    return '<tr'+(paid?' class="paid-expense"':'')+'><td>'+itemLabel(item)+'</td><td class="expense-day">'+item.day+
+      '</td><td class="amount">'+cash(item.amount)+'</td><td class="action-cell">'+expenseActions(item,'fixed:'+index)+'</td>'+checkbox+'</tr>';
+  };
   const rows=[],groups=new Map();
   data.fixed.forEach((item,index)=>{
     if (!item.group) {rows.push(row(item,index));return;}
@@ -157,11 +166,14 @@ function monthly(data) {
     group.amount+=item.amount;
   });
   for (const group of groups.values()) {
-    rows.push('<tr class="fixed-group"><th colspan="4" scope="rowgroup">'+text(group.name)+
+    rows.push('<tr class="fixed-group"><th colspan="'+(paidColumnVisible?5:4)+'" scope="rowgroup">'+text(group.name)+
       ' · dia '+group.day+' · '+cash(group.amount)+'</th></tr>',...group.rows);
   }
-  const fixed=section('Contas e despesas',rows.length?table([['Conta'],['Dia'],['Valor','amount'],['']],rows):
-    empty('Adicione sua primeira despesa.'),click('+ Despesa','fixed:new','primary'));
+  const headers=[['Conta'],['Dia'],['Valor','amount'],['']];
+  if (paidColumnVisible) headers.push(['Pago','paid-cell']);
+  const fixed=section('Contas e despesas',rows.length?table(headers,rows):empty('Adicione sua primeira despesa.'),
+    '<div class="expense-controls">'+click(paidColumnVisible?'Ocultar coluna Pago':'Mostrar coluna Pago','paid-column')+
+    click('+ Despesa','fixed:new','primary')+'</div>');
   const billed=data.cards.map(card=>({...card,amount:sum(data.entries.filter(item=>item.card===card.id))}))
     .filter(card=>!card.archived || card.amount!==0);
   const subtotal=day=>sum(data.fixed.filter(item=>item.day===day))+sum(billed.filter(card=>card.day===day));
@@ -655,6 +667,12 @@ async function action(event) {
   if (kind==='tab') {if (dialog.open) dialog.close();active=arg;render();}
   if (kind==='settings') settings();
   if (kind==='fixed') fixedEditor(data.fixed[Number(arg)]);
+  if (kind==='paid-column') {
+    paidColumnVisible=!paidColumnVisible;
+    try {localStorage.setItem(paidColumnPreference,String(paidColumnVisible));} catch {}
+    render();
+    view.querySelector('[data-action="paid-column"]').focus();
+  }
   if (kind==='entry') entryEditor(arg);
   if (kind==='delete') {
     if (arg.startsWith('fixed:')) expenseDelete(data.fixed[Number(arg.slice(6))]);
@@ -724,6 +742,21 @@ view.addEventListener('focusout',()=>setTimeout(()=>{
 },0));
 view.addEventListener('change',event=>{
   const input=event.target;
+  if (input.dataset.paidKey) {
+    const key=input.dataset.paidKey;
+    const paid=input.checked;
+    input.disabled=true;
+    void commit(new Map([[key,{type:'paid',paid}]])).catch(error=>{
+      input.checked=!paid;
+      input.disabled=false;
+      notice(error.message,true);
+    }).finally(()=>{
+      if (document.activeElement===document.body) {
+        view.querySelector('[data-paid-key="'+CSS.escape(key)+'"]')?.focus();
+      }
+    });
+    return;
+  }
   if (!input.dataset.income) return;
   try {
     const key='income:'+month.value+':'+input.dataset.income;
